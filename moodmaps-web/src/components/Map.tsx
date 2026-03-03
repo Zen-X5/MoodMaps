@@ -48,6 +48,7 @@ const Map: React.FC = () => {
             });
 
             map.current.on('click', (e: any) => {
+                console.log('Map Clicked!', e.lngLat);
                 const { lng, lat } = e.lngLat;
                 setSelectedCoords({ lat, lng });
                 setIsModalOpen(true);
@@ -74,7 +75,7 @@ const Map: React.FC = () => {
     const renderMarkers = (moods: any[]) => {
         if (!map.current) return;
 
-        // Clear existing markers (simplistic for MVP)
+        // Clear existing markers
         const elements = document.getElementsByClassName('mapboxgl-marker');
         while (elements.length > 0) {
             elements[0].parentNode?.removeChild(elements[0]);
@@ -82,16 +83,14 @@ const Map: React.FC = () => {
 
         moods.forEach((m) => {
             const color = getMoodColor(m.mood);
-            const marker = new mapboxgl.Marker({ color })
+            new mapboxgl.Marker({ color })
                 .setLngLat(m.location.coordinates)
-                .setPopup(new mapboxgl.Popup({ offset: 25 })
+                .setPopup(new mapboxgl.Popup({ offset: 25, className: 'custom-popup' })
                     .setHTML(`
-                  <div class="p-3 bg-zinc-900 text-white rounded-lg border border-zinc-800">
-                    <h3 class="font-bold capitalize text-lg mb-1">${m.mood}</h3>
-                    <p class="text-sm text-zinc-400 leading-tight">${m.description || 'No description available'}</p>
-                    <div class="mt-2 text-[10px] text-zinc-600 uppercase tracking-tighter">
-                      ${new Date(m.createdAt).toLocaleDateString()}
-                    </div>
+                  <div style="padding: 4px">
+                    <h3 style="font-weight: 800; text-transform: capitalize; margin-bottom: 4px; color: white">${m.mood}</h3>
+                    <p style="font-size: 12px; color: #a1a1aa; line-height: 1.2">${m.description || 'No description'}</p>
+                    <p style="font-size: 8px; margin-top: 8px; color: #52525b; text-transform: uppercase; font-weight: 700">${new Date(m.createdAt).toLocaleDateString()}</p>
                   </div>
                 `))
                 .addTo(map.current!);
@@ -101,8 +100,8 @@ const Map: React.FC = () => {
     const getMoodColor = (mood: string) => {
         switch (mood) {
             case 'romantic': return '#ec4899';
-            case 'lonely': return '#60a5fa';
-            case 'chill': return '#2dd4bf';
+            case 'lonely': return '#3b82f6';
+            case 'chill': return '#14b8a6';
             case 'nostalgic': return '#f59e0b';
             case 'unsafe': return '#ef4444';
             default: return '#ffffff';
@@ -129,47 +128,29 @@ const Map: React.FC = () => {
 
             if (data.success) {
                 setIsModalOpen(false);
-                fetchMoods(); // Refresh all markers
+                fetchMoods();
             }
         } catch (err: any) {
             console.error('Submission failed:', err);
-            if (err.response?.status === 401) {
-                setIsAuthOpen(true);
-            }
+            if (err.response?.status === 401) setIsAuthOpen(true);
         }
     };
 
     return (
-        <div className="relative w-full h-full">
+        <div style={{ position: 'relative', width: '100%', height: '100%' }}>
             <div
                 ref={mapContainer}
-                className="absolute inset-0 w-full h-full"
+                style={{ position: 'absolute', inset: 0 }}
             />
 
             {/* Top Bar Overlay */}
-            <div className="absolute top-6 left-6 right-6 z-10 flex justify-between items-start pointer-events-none">
-                <div className="p-3 bg-black/60 text-white/70 rounded-2xl backdrop-blur-xl text-[10px] uppercase tracking-widest border border-white/10 flex items-center gap-4 pointer-events-auto">
-                    <div className="flex flex-col">
-                        <span className="text-white/40 mb-0.5">Coordinates</span>
-                        <span className="font-mono">{lat.toFixed(4)}, {lng.toFixed(4)}</span>
-                    </div>
-                    <div className="h-6 w-[1px] bg-white/10" />
-                    <div className="flex items-center gap-3">
-                        {user ? (
-                            <div className="flex flex-col">
-                                <span className="text-white/40 mb-0.5">Explorer</span>
-                                <span className="text-pink-500 font-black lowercase">@{user.username}</span>
-                            </div>
-                        ) : (
-                            <button
-                                onClick={() => setIsAuthOpen(true)}
-                                className="px-4 py-2 bg-white text-black text-[10px] font-black rounded-xl hover:bg-zinc-200 transition-all pointer-events-auto"
-                            >
-                                Sign In
-                            </button>
-                        )}
-                    </div>
-                </div>
+            <div className="stats-bar">
+                <div>{lat.toFixed(4)}, {lng.toFixed(4)}</div>
+                {user ? (
+                    <div className="user-tag">@{user.username}</div>
+                ) : (
+                    <button onClick={() => setIsAuthOpen(true)} className="auth-btn-small">Sign In</button>
+                )}
             </div>
 
             <MoodModal
@@ -185,19 +166,6 @@ const Map: React.FC = () => {
                 onClose={() => setIsAuthOpen(false)}
                 onAuthSuccess={(token, user) => setUser(user)}
             />
-
-            {/* CSS for Mapbox Popups */}
-            <style jsx global>{`
-        .mapboxgl-popup-content {
-          background: transparent !important;
-          padding: 0 !important;
-          border-radius: 12px !important;
-          box-shadow: none !important;
-        }
-        .mapboxgl-popup-tip {
-          border-top-color: #18181b !important;
-        }
-      `}</style>
         </div>
     );
 };
