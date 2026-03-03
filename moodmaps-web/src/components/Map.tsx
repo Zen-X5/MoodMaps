@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 // @ts-ignore
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
@@ -25,6 +26,7 @@ const Map: React.FC = () => {
     const [isAuthOpen, setIsAuthOpen] = useState(false);
     const [selectedCoords, setSelectedCoords] = useState<{ lat: number; lng: number } | null>(null);
     const [user, setUser] = useState<any>(null);
+    const [dominantMood, setDominantMood] = useState<any>(null);
 
     useEffect(() => {
         // Load user from storage
@@ -47,6 +49,11 @@ const Map: React.FC = () => {
                 setZoom(Number(map.current?.getZoom().toFixed(2)));
             });
 
+            // Fetch dominant mood on moveend (debounced)
+            map.current.on('moveend', () => {
+                fetchDominantMood();
+            });
+
             map.current.on('click', (e: any) => {
                 console.log('Map Clicked!', e.lngLat);
                 const { lng, lat } = e.lngLat;
@@ -57,9 +64,23 @@ const Map: React.FC = () => {
             // Initial fetch of moods
             map.current.on('load', () => {
                 fetchMoods();
+                fetchDominantMood();
             });
         }
     }, []);
+
+    const fetchDominantMood = async () => {
+        if (!map.current) return;
+        const center = map.current.getCenter();
+        try {
+            const { data } = await api.get(`/moods/dominant?lat=${center.lat}&lng=${center.lng}&radius=2000`);
+            if (data.success) {
+                setDominantMood(data.data);
+            }
+        } catch (err) {
+            console.error('Failed to fetch dominant mood:', err);
+        }
+    };
 
     const fetchMoods = async () => {
         try {
@@ -129,6 +150,7 @@ const Map: React.FC = () => {
             if (data.success) {
                 setIsModalOpen(false);
                 fetchMoods();
+                fetchDominantMood();
             }
         } catch (err: any) {
             console.error('Submission failed:', err);
@@ -138,6 +160,18 @@ const Map: React.FC = () => {
 
     return (
         <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+            {/* Background Glow Effect */}
+            <div
+                style={{
+                    position: 'absolute',
+                    inset: 0,
+                    background: dominantMood ? `radial-gradient(circle at 50% 50%, ${getMoodColor(dominantMood._id)}15 0%, transparent 70%)` : 'transparent',
+                    zIndex: 5,
+                    pointerEvents: 'none',
+                    transition: 'background 2s ease'
+                }}
+            />
+
             <div
                 ref={mapContainer}
                 style={{ position: 'absolute', inset: 0 }}
@@ -152,6 +186,40 @@ const Map: React.FC = () => {
                     <button onClick={() => setIsAuthOpen(true)} className="auth-btn-small">Sign In</button>
                 )}
             </div>
+
+            {/* Dominant Mood Center Overlay */}
+            <AnimatePresence>
+                {dominantMood && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="vibe-overlay"
+                        style={{
+                            position: 'absolute',
+                            bottom: '40px',
+                            left: '50%',
+                            transform: 'translateX(-50%)',
+                            zIndex: 30,
+                            padding: '16px 32px',
+                            background: 'rgba(0,0,0,0.7)',
+                            backdropFilter: 'blur(20px)',
+                            borderRadius: '24px',
+                            border: `1px solid ${getMoodColor(dominantMood._id)}44`,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            boxShadow: `0 20px 40px ${getMoodColor(dominantMood._id)}11`
+                        }}
+                    >
+                        <span style={{ fontSize: '10px', color: '#71717a', textTransform: 'uppercase', letterSpacing: '0.2em', fontWeight: 800, marginBottom: '4px' }}>Local Vibe</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: getMoodColor(dominantMood._id), boxShadow: `0 0 10px ${getMoodColor(dominantMood._id)}` }} />
+                            <span style={{ fontSize: '1.5rem', fontWeight: 900, textTransform: 'capitalize', color: 'white' }}>{dominantMood._id}</span>
+                        </div>
+                        <span style={{ fontSize: '10px', color: '#52525b', marginTop: '4px' }}>Based on {dominantMood.count} recent checks</span>
+                    </motion.div>
+                )}
+            </AnimatePresence>
 
             <MoodModal
                 isOpen={isModalOpen}
