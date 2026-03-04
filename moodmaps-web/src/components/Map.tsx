@@ -9,7 +9,7 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 
 import Atmosphere from './Atmosphere';
 import MoodModal from './MoodModal';
-import MoodDetailModal from './MoodDetailModal';
+import MoodDetailModal from '@/components/MoodDetailModal';
 import AuthOverlay from './AuthOverlay';
 import api from '@/lib/api';
 import { io } from 'socket.io-client';
@@ -18,6 +18,10 @@ import { io } from 'socket.io-client';
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5005';
+const MIN_DOMINANT_MOOD_RADIUS_METERS = 80;
+const MAX_DOMINANT_MOOD_RADIUS_METERS = 500;
+const DOMINANT_RADIUS_VIEWPORT_FACTOR = 0.9;
+const FORCED_MARKER_REFRESH_MS = 30000;
 
 const Map: React.FC = () => {
     const mapContainer = useRef<HTMLDivElement>(null);
@@ -39,6 +43,7 @@ const Map: React.FC = () => {
     const [spotMoods, setSpotMoods] = useState<any[]>([]);
     const [isAuthOpen, setIsAuthOpen] = useState(false);
     const [selectedCoords, setSelectedCoords] = useState<{ lat: number; lng: number } | null>(null);
+    const [selectedPlaceName, setSelectedPlaceName] = useState<string | null>(null);
     const [user, setUser] = useState<any>(null);
     const [dominantMood, setDominantMood] = useState<any>(null);
     const [moods, setMoods] = useState<any[]>([]);
@@ -47,6 +52,13 @@ const Map: React.FC = () => {
     const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
     const [isLocating, setIsLocating] = useState(false);
     const [isFollowing, setIsFollowing] = useState(false);
+    const moodsRef = useRef<any[]>([]);
+    const filterMoodRef = useRef<string | null>(null);
+
+    useEffect(() => {
+        moodsRef.current = moods;
+        filterMoodRef.current = filterMood;
+    }, [moods, filterMood]);
 
     // Socket Initialization
     useEffect(() => {
@@ -178,6 +190,8 @@ const Map: React.FC = () => {
         m.on('click', (e: any) => {
             const { lng, lat } = e.lngLat;
             setSelectedCoords({ lat, lng });
+            setSelectedPlaceName(null);
+            resolveAndSetPlaceName(lat, lng);
             setIsModalOpen(true);
         });
 
@@ -230,7 +244,14 @@ const Map: React.FC = () => {
         features.forEach((f: any, index: number) => {
             const coords = f.geometry.coordinates as [number, number];
             const props = f.properties;
-            const id = props.cluster ? `cluster-${props.cluster_id}` : `mood-${props.id}`;
+            const isCluster = Boolean(props.cluster);
+            const spotState = !isCluster ? getSpotStateFromId(String(props.id || '')) : null;
+            const spotMood = spotState?.dominantMood || props.mood;
+            const spotCount = spotState?.count ?? Number(props.count || 0);
+
+            const id = isCluster
+                ? `cluster-${props.cluster_id}-${props.point_count}`
+                : `mood-${props.id}-${spotMood}-${spotCount}`;
 
             if (newMarkers[id]) return;
 
@@ -241,14 +262,14 @@ const Map: React.FC = () => {
                 // Stagger effect for "seeable" splitting
                 el.style.animationDelay = `${(index % 20) * 30}ms`;
 
-                if (props.cluster) {
+                if (isCluster) {
                     el.className = 'cluster-marker';
                     const counts = {
-                        romantic: props.romantic,
-                        lonely: props.lonely,
-                        chill: props.chill,
-                        nostalgic: props.nostalgic,
-                        unsafe: props.unsafe
+                        romantic: Number(props.romantic) || 0,
+                        lonely: Number(props.lonely) || 0,
+                        chill: Number(props.chill) || 0,
+                        nostalgic: Number(props.nostalgic) || 0,
+                        unsafe: Number(props.unsafe) || 0
                     };
                     const dominantMood = Object.entries(counts).reduce((a, b: any) => a[1] > b[1] ? a : b)[0];
                     const emoji = getMoodEmoji(dominantMood);
@@ -275,11 +296,11 @@ const Map: React.FC = () => {
                     });
                 } else {
                     el.className = 'custom-marker-container';
-                    const color = getMoodColor(props.mood);
-                    const emoji = getMoodEmoji(props.mood);
-                    const countBadge = props.count > 1 ? `
+                    const color = getMoodColor(spotMood);
+                    const emoji = getMoodEmoji(spotMood);
+                    const countBadge = spotCount > 1 ? `
                         <div style="position: absolute; top: -6px; right: -6px; background: white; color: black; font-size: 8px; font-weight: 900; width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 1.5px solid ${color}; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">
-                            ${props.count}
+                            ${spotCount}
                         </div>
                     ` : '';
 
@@ -311,45 +332,113 @@ const Map: React.FC = () => {
         markersRef.current = newMarkers;
     };
 
+    const moodPriority: Record<string, number> = {
+        chill: 5,
+        romantic: 4,
+        nostalgic: 3,
+        lonely: 2,
+        unsafe: 1,
+    };
+
+    const getDominantMoodForSpot = (spotMoods: any[]) => {
+        const counts: Record<string, { count: number; latest: number }> = {};
+
+        spotMoods.forEach((entry) => {
+            const mood = entry.mood;
+            if (!counts[mood]) {
+                counts[mood] = { count: 0, latest: 0 };
+            }
+
+            const createdAt = entry.createdAt ? new Date(entry.createdAt).getTime() : 0;
+            const safeCreatedAt = Number.isNaN(createdAt) ? 0 : createdAt;
+
+            counts[mood].count += 1;
+            counts[mood].latest = Math.max(counts[mood].latest, safeCreatedAt);
+        });
+
+        const [dominantMood] = Object.entries(counts)
+            .sort((a, b) => {
+                const [moodA, dataA] = a;
+                const [moodB, dataB] = b;
+
+                return (
+                    dataB.count - dataA.count ||
+                    (moodPriority[moodB] || 0) - (moodPriority[moodA] || 0) ||
+                    dataB.latest - dataA.latest
+                );
+            })[0] || [];
+
+        return dominantMood || 'chill';
+    };
+
+    const toSpotKey = (coordinates: [number, number] | number[]) => {
+        const lng = Number(coordinates[0]);
+        const lat = Number(coordinates[1]);
+        return `${lng.toFixed(5)},${lat.toFixed(5)}`;
+    };
+
+    const getSpotStateFromId = (spotId: string) => {
+        const spotKey = spotId.startsWith('spot-') ? spotId.slice(5) : spotId;
+        const spotMoods = moodsRef.current.filter(
+            (m: any) => toSpotKey(m.location.coordinates) === spotKey
+        );
+
+        if (!spotMoods.length) return null;
+
+        return {
+            dominantMood: getDominantMoodForSpot(spotMoods),
+            count: spotMoods.length,
+        };
+    };
+
     const convertMoodsToGeoJSON = (moodsList: any[], filter: string | null): any => {
-        const filtered = filter ? moodsList.filter(m => m.mood === filter) : moodsList;
+        // Group moods by location key
+        const spots: { [key: string]: { moods: any[], coordinates: [number, number] } } = {};
 
-        // Group moods by exact coordinate
-        const spots: { [key: string]: { moods: any[], latest: any } } = {};
-
-        filtered.forEach(m => {
-            const key = `${m.location.coordinates[0]},${m.location.coordinates[1]}`;
+        moodsList.forEach(m => {
+            const key = toSpotKey(m.location.coordinates);
             if (!spots[key]) {
-                spots[key] = { moods: [], latest: m };
+                spots[key] = { moods: [], coordinates: m.location.coordinates };
             }
             spots[key].moods.push(m);
-            // Assuming moodsList is sorted by createdAt desc, first one is latest
-            // If not, we could compare dates, but fetchMoods usually sorts.
         });
 
         return {
             type: 'FeatureCollection',
-            features: Object.entries(spots).map(([key, spot]) => ({
-                type: 'Feature',
-                geometry: {
-                    type: 'Point',
-                    coordinates: spot.latest.location.coordinates
-                },
-                properties: {
-                    mood: spot.latest.mood,
-                    id: `spot-${key}`,
-                    count: spot.moods.length
+            features: Object.entries(spots).reduce((acc: any[], [key, spot]) => {
+                const dominantMood = getDominantMoodForSpot(spot.moods);
+
+                if (filter && dominantMood !== filter) {
+                    return acc;
                 }
-            }))
+
+                acc.push({
+                    type: 'Feature',
+                    geometry: {
+                        type: 'Point',
+                        coordinates: spot.coordinates
+                    },
+                    properties: {
+                        mood: dominantMood,
+                        id: `spot-${key}`,
+                        count: spot.moods.length
+                    }
+                });
+
+                return acc;
+            }, [])
         };
     };
 
     const fetchSpotDetails = async (lat: number, lng: number) => {
         try {
+            setSelectedCoords({ lat, lng });
+            setSelectedPlaceName(null);
+            resolveAndSetPlaceName(lat, lng);
+
             const { data } = await api.get(`/moods/spot?lat=${lat}&lng=${lng}`);
             if (data.success) {
                 setSpotMoods(data.data);
-                setSelectedCoords({ lat, lng });
                 setIsDetailOpen(true);
             }
         } catch (err) {
@@ -374,16 +463,81 @@ const Map: React.FC = () => {
         }
     };
 
+    const fetchPlaceNameFromCoords = async (lat: number, lng: number): Promise<string | null> => {
+        if (!mapboxgl.accessToken) return null;
+
+        try {
+            const endpoint = `https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json?access_token=${mapboxgl.accessToken}&limit=1`;
+            const response = await fetch(endpoint);
+
+            if (!response.ok) return null;
+
+            const payload = await response.json();
+            const top = payload?.features?.[0];
+            return top?.place_name || top?.text || null;
+        } catch (error) {
+            console.error('Failed to resolve place name:', error);
+            return null;
+        }
+    };
+
+    const resolveAndSetPlaceName = async (lat: number, lng: number) => {
+        const placeName = await fetchPlaceNameFromCoords(lat, lng);
+        setSelectedPlaceName(placeName);
+    };
+
+    const getDistanceMeters = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+        const toRad = (value: number) => (value * Math.PI) / 180;
+        const earthRadius = 6371000;
+
+        const dLat = toRad(lat2 - lat1);
+        const dLng = toRad(lng2 - lng1);
+
+        const a =
+            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return earthRadius * c;
+    };
+
+    const getAdaptiveDominantRadiusMeters = (currentMap: mapboxgl.Map) => {
+        const center = currentMap.getCenter();
+        const bounds = currentMap.getBounds();
+
+        if (!bounds) {
+            return MAX_DOMINANT_MOOD_RADIUS_METERS;
+        }
+
+        const northDistance = getDistanceMeters(center.lat, center.lng, bounds.getNorth(), center.lng);
+        const southDistance = getDistanceMeters(center.lat, center.lng, bounds.getSouth(), center.lng);
+        const eastDistance = getDistanceMeters(center.lat, center.lng, center.lat, bounds.getEast());
+        const westDistance = getDistanceMeters(center.lat, center.lng, center.lat, bounds.getWest());
+
+        const nearestEdgeDistance = Math.min(northDistance, southDistance, eastDistance, westDistance);
+        const adaptiveRadius = Math.round(nearestEdgeDistance * DOMINANT_RADIUS_VIEWPORT_FACTOR);
+
+        return Math.max(
+            MIN_DOMINANT_MOOD_RADIUS_METERS,
+            Math.min(MAX_DOMINANT_MOOD_RADIUS_METERS, adaptiveRadius)
+        );
+    };
+
     const fetchDominantMood = async () => {
         if (!map.current) return;
         const center = map.current.getCenter();
+        const radius = getAdaptiveDominantRadiusMeters(map.current);
+
         try {
-            const { data } = await api.get(`/moods/dominant?lat=${center.lat}&lng=${center.lng}&radius=2000`);
-            if (data.success) {
+            const { data } = await api.get(`/moods/dominant?lat=${center.lat}&lng=${center.lng}&radius=${radius}`);
+            if (data.success && data.data) {
                 setDominantMood(data.data);
+            } else {
+                setDominantMood(null);
             }
         } catch (err) {
             console.error('Failed to fetch dominant mood:', err);
+            setDominantMood(null);
         }
     };
 
@@ -400,6 +554,33 @@ const Map: React.FC = () => {
             console.error('Failed to fetch moods:', err);
         }
     };
+
+    const forceRerenderMarkers = () => {
+        if (!map.current || !map.current.isStyleLoaded()) return;
+
+        const source = map.current.getSource('mood-source') as any;
+        if (!source) return;
+
+        for (const id in markersRef.current) {
+            markersRef.current[id]?.remove?.();
+        }
+        markersRef.current = {};
+
+        source.setData(convertMoodsToGeoJSON(moodsRef.current, filterMoodRef.current));
+        updateMarkers();
+    };
+
+    useEffect(() => {
+        const timerId = window.setInterval(() => {
+            forceRerenderMarkers();
+            fetchMoods();
+            fetchDominantMood();
+        }, FORCED_MARKER_REFRESH_MS);
+
+        return () => {
+            window.clearInterval(timerId);
+        };
+    }, []);
 
     // Helper to get Lucide icon paths/dots (simplifying for static HTML markers)
     const getMoodEmoji = (mood: string) => {
@@ -671,12 +852,14 @@ const Map: React.FC = () => {
                 onSubmit={handleMoodSubmit}
                 lat={selectedCoords?.lat || 0}
                 lng={selectedCoords?.lng || 0}
+                placeName={selectedPlaceName}
             />
 
             <MoodDetailModal
                 isOpen={isDetailOpen}
                 onClose={() => setIsDetailOpen(false)}
                 moods={spotMoods}
+                placeName={selectedPlaceName}
                 onAddMood={() => {
                     setIsDetailOpen(false);
                     setIsModalOpen(true);

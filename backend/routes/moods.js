@@ -93,10 +93,6 @@ router.get('/dominant', async (req, res) => {
             coordinates: [parseFloat(lng), parseFloat(lat)]
         };
 
-        const now = new Date();
-        const oneDayAgo = new Date(now.getTime() - (24 * 60 * 60 * 1000));
-        const sevenDaysAgo = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
-
         const moods = await Mood.aggregate([
             {
                 $geoNear: {
@@ -107,30 +103,35 @@ router.get('/dominant', async (req, res) => {
                 }
             },
             {
-                $addFields: {
-                    weight: {
-                        $cond: [
-                            { $gt: ["$createdAt", oneDayAgo] },
-                            2.0, // New moods = Double weight
-                            {
-                                $cond: [
-                                    { $gt: ["$createdAt", sevenDaysAgo] },
-                                    1.0, // Recent moods = Base weight
-                                    0.5  // Old moods = Half weight
-                                ]
-                            }
-                        ]
-                    }
+                $group: {
+                    _id: "$mood",
+                    count: { $sum: 1 },
+                    latestAt: { $max: "$createdAt" }
                 }
             },
             {
-                $group: {
-                    _id: "$mood",
-                    score: { $sum: "$weight" },
-                    count: { $sum: 1 }
+                $addFields: {
+                    priority: {
+                        $switch: {
+                            branches: [
+                                { case: { $eq: ["$_id", "chill"] }, then: 5 },
+                                { case: { $eq: ["$_id", "romantic"] }, then: 4 },
+                                { case: { $eq: ["$_id", "nostalgic"] }, then: 3 },
+                                { case: { $eq: ["$_id", "lonely"] }, then: 2 },
+                                { case: { $eq: ["$_id", "unsafe"] }, then: 1 },
+                            ],
+                            default: 0
+                        }
+                    }
                 }
             },
-            { $sort: { score: -1 } },
+            { $sort: { count: -1, priority: -1, latestAt: -1 } },
+            {
+                $project: {
+                    _id: 1,
+                    count: 1
+                }
+            },
             { $limit: 1 }
         ]);
 

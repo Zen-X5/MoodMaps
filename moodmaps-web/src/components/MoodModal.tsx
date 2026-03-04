@@ -10,6 +10,7 @@ interface MoodModalProps {
     onSubmit: (mood: string, description: string, rating: number, images: File[]) => void;
     lat: number;
     lng: number;
+    placeName?: string | null;
 }
 
 const moods = [
@@ -20,7 +21,7 @@ const moods = [
     { id: 'unsafe', label: 'Unsafe', icon: ShieldAlert, color: '#ef4444' },
 ];
 
-const MoodModal: React.FC<MoodModalProps> = ({ isOpen, onClose, onSubmit, lat, lng }) => {
+const MoodModal: React.FC<MoodModalProps> = ({ isOpen, onClose, onSubmit, lat, lng, placeName }) => {
     const fileInputRef = React.useRef<HTMLInputElement>(null);
     const [selectedMood, setSelectedMood] = useState<string | null>(null);
     const [description, setDescription] = useState('');
@@ -64,6 +65,9 @@ const MoodModal: React.FC<MoodModalProps> = ({ isOpen, onClose, onSubmit, lat, l
                         <div>
                             <h3 style={{ fontSize: '1.25rem', fontWeight: 800 }}>How's the vibe?</h3>
                             <p style={{ fontSize: '10px', color: '#a1a1aa' }}>{lat.toFixed(4)}, {lng.toFixed(4)}</p>
+                            {placeName && (
+                                <p style={{ fontSize: '10px', color: '#71717a', marginTop: '2px' }}>{placeName}</p>
+                            )}
                         </div>
                         <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#52525b' }}>
                             <X size={20} />

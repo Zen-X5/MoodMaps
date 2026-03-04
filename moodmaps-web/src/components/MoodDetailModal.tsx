@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Heart, CloudRain, Coffee, History, ShieldAlert, Star, MessageSquare, Plus, ChevronLeft, ChevronRight, User, TrendingUp } from 'lucide-react';
+import { X, Star, MessageSquare, Plus, ChevronLeft, ChevronRight, User } from 'lucide-react';
 
 interface Comment {
     _id: string;
@@ -32,9 +32,12 @@ interface MoodDetailModalProps {
     isOpen: boolean;
     onClose: () => void;
     moods: MoodEntry[];
+    placeName?: string | null;
     onAddMood: () => void;
     onAddComment: (moodId: string, text: string) => void;
 }
+
+const moodOrder = ['romantic', 'lonely', 'chill', 'nostalgic', 'unsafe'];
 
 const getMoodEmoji = (mood: string) => {
     switch (mood) {
@@ -58,540 +61,706 @@ const getMoodColor = (mood: string) => {
     }
 };
 
-const MoodDetailModal: React.FC<MoodDetailModalProps> = ({ isOpen, onClose, moods, onAddMood, onAddComment }) => {
-    const [commentText, setCommentText] = useState<{ [key: string]: string }>({});
+const MoodDetailModal: React.FC<MoodDetailModalProps> = ({ isOpen, onClose, moods, placeName, onAddMood, onAddComment }) => {
+    const [commentText, setCommentText] = useState<Record<string, string>>({});
     const [activeImageIdx, setActiveImageIdx] = useState(0);
 
-    // Calculate Statistics
     const stats = useMemo(() => {
         if (!moods.length) return null;
 
-        const counts: { [key: string]: number } = {};
-        let totalRating = 0;
+        const counts = moods.reduce<Record<string, number>>((acc, mood) => {
+            acc[mood.mood] = (acc[mood.mood] || 0) + 1;
+            return acc;
+        }, {});
 
-        moods.forEach(m => {
-            counts[m.mood] = (counts[m.mood] || 0) + 1;
-            totalRating += m.rating;
-        });
-
+        const dominant = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || moods[0].mood;
         const totalEntries = moods.length;
-        const dominant = Object.entries(counts).reduce((a, b) => a[1] > b[1] ? a : b)[0];
-        const avgRating = totalRating / totalEntries;
+        const avgRating = moods.reduce((sum, mood) => sum + mood.rating, 0) / totalEntries;
 
-        return {
-            counts,
-            totalEntries,
-            dominant,
-            avgRating
-        };
+        return { counts, dominant, totalEntries, avgRating };
     }, [moods]);
 
-    if (!isOpen || moods.length === 0 || !stats) return null;
+    const allImages = useMemo(() => moods.flatMap((mood) => mood.images || []), [moods]);
 
-    // Aggregate all images
-    const allImages = moods.reduce((acc, curr) => [...acc, ...curr.images], [] as string[]);
+    useEffect(() => {
+        if (allImages.length === 0) {
+            setActiveImageIdx(0);
+            return;
+        }
+
+        if (activeImageIdx > allImages.length - 1) {
+            setActiveImageIdx(0);
+        }
+    }, [activeImageIdx, allImages.length]);
+
+    if (!isOpen || !moods.length || !stats) return null;
 
     const handleCommentSubmit = (moodId: string) => {
-        if (!commentText[moodId]?.trim()) return;
-        onAddComment(moodId, commentText[moodId]);
-        setCommentText({ ...commentText, [moodId]: '' });
+        const text = (commentText[moodId] || '').trim();
+        if (!text) return;
+        onAddComment(moodId, text);
+        setCommentText((prev) => ({ ...prev, [moodId]: '' }));
     };
 
-    const moodOptions = ['romantic', 'lonely', 'chill', 'nostalgic', 'unsafe'];
+    const goPrevImage = () => {
+        setActiveImageIdx((prev) => (prev === 0 ? allImages.length - 1 : prev - 1));
+    };
+
+    const goNextImage = () => {
+        setActiveImageIdx((prev) => (prev === allImages.length - 1 ? 0 : prev + 1));
+    };
 
     return (
         <AnimatePresence>
             <div className="modal-backdrop" onClick={onClose} style={{ zIndex: 3000 }}>
                 <motion.div
-                    initial={{ opacity: 0, scale: 0.95, y: 30 }}
+                    initial={{ opacity: 0, scale: 0.95, y: 24 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95, y: 30 }}
-                    className="mood-detail-card"
-                    onClick={(e) => e.stopPropagation()}
+                    exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                    transition={{ duration: 0.22 }}
+                    className="mood-detail-card-v3"
+                    onClick={(event) => event.stopPropagation()}
                 >
-                    {/* Centered Dominant Mood Header */}
-                    <div className="new-modal-header">
-                        <div className="header-vibe-center">
-                            <div className="dominant-sticker pulse" style={{ background: getMoodColor(stats.dominant) }}>
+                    <header className="modal-header-v3">
+                        <div className="dominant-wrap">
+                            <div className="dominant-emoji" style={{ background: getMoodColor(stats.dominant) }}>
                                 {getMoodEmoji(stats.dominant)}
                             </div>
-                            <h2 className="dominant-title" style={{ color: getMoodColor(stats.dominant) }}>
-                                {stats.dominant.toUpperCase()}
-                            </h2>
-                            <span className="stats-label">Dominant Vibe</span>
+                            <div>
+                                <p className="dominant-label">Dominant Mood</p>
+                                <h2 className="dominant-title" style={{ color: getMoodColor(stats.dominant) }}>
+                                    {stats.dominant}
+                                </h2>
+                                {placeName && <p className="dominant-place">{placeName}</p>}
+                            </div>
                         </div>
-                        <button className="detail-close-btn" onClick={onClose}>
+
+                        <button className="close-btn" onClick={onClose} aria-label="Close mood details modal">
                             <X size={18} />
                         </button>
-                    </div>
+                    </header>
 
-                    <div className="detail-scroll-container">
-                        {/* Gallery Section */}
-                        <div className="detail-header-gallery">
+                    <div className="modal-body-v3">
+                        <section className="gallery-section-v3">
                             {allImages.length > 0 ? (
-                                <div className="gallery-main">
-                                    <img src={allImages[activeImageIdx]} alt="Spot" className="gallery-img" />
+                                <div className="gallery-shell-v3">
+                                    <img
+                                        src={allImages[activeImageIdx]}
+                                        alt={`Mood image ${activeImageIdx + 1}`}
+                                        className="gallery-image-v3"
+                                    />
+
                                     {allImages.length > 1 && (
                                         <>
-                                            <button
-                                                className="gallery-nav prev"
-                                                onClick={() => setActiveImageIdx((prev) => (prev > 0 ? prev - 1 : allImages.length - 1))}
-                                            >
-                                                <ChevronLeft size={20} />
+                                            <button className="gallery-nav prev" onClick={goPrevImage} aria-label="Previous image">
+                                                <ChevronLeft size={18} />
                                             </button>
-                                            <button
-                                                className="gallery-nav next"
-                                                onClick={() => setActiveImageIdx((prev) => (prev < allImages.length - 1 ? prev + 1 : 0))}
-                                            >
-                                                <ChevronRight size={20} />
+                                            <button className="gallery-nav next" onClick={goNextImage} aria-label="Next image">
+                                                <ChevronRight size={18} />
                                             </button>
+
                                             <div className="gallery-dots">
-                                                {allImages.map((_, i) => (
-                                                    <div key={i} className={`dot ${i === activeImageIdx ? 'active' : ''}`} />
+                                                {allImages.map((_, index) => (
+                                                    <button
+                                                        key={index}
+                                                        className={`dot ${index === activeImageIdx ? 'active' : ''}`}
+                                                        onClick={() => setActiveImageIdx(index)}
+                                                        aria-label={`Go to image ${index + 1}`}
+                                                    />
                                                 ))}
                                             </div>
                                         </>
                                     )}
                                 </div>
                             ) : (
-                                <div className="gallery-placeholder">
-                                    <div className="placeholder-content">
-                                        <p>Vibe Check</p>
-                                        <span style={{ color: '#71717a', fontSize: '10px' }}>No photos captured yet</span>
-                                    </div>
-                                </div>
+                                <div className="gallery-empty-v3">No photos for this spot yet</div>
                             )}
-                        </div>
+                        </section>
 
-                        {/* Distribution Section */}
-                        <div className="stats-section-compact">
-                            <div className="distribution-container">
-                                <div className="distribution-bar">
-                                    {moodOptions.map(mood => {
-                                        const count = stats.counts[mood] || 0;
-                                        if (count === 0) return null;
-                                        const width = (count / stats.totalEntries) * 100;
-                                        return (
-                                            <div
-                                                key={mood}
-                                                className="dist-segment"
-                                                style={{ width: `${width}%`, backgroundColor: getMoodColor(mood) }}
-                                                title={`${mood}: ${count} votes`}
-                                            />
-                                        );
-                                    })}
-                                </div>
-                                <div className="distribution-legend-row">
-                                    {moodOptions.map(mood => {
-                                        const count = stats.counts[mood] || 0;
-                                        if (count === 0) return null;
-                                        return (
-                                            <div key={mood} className="legend-item-pill" style={{ border: `1px solid ${getMoodColor(mood)}33` }}>
-                                                <span className="pill-emoji">{getMoodEmoji(mood)}</span>
-                                                <span className="pill-count">{count}</span>
-                                            </div>
-                                        );
-                                    })}
-                                    <div className="total-pill">
-                                        {stats.totalEntries} Total
+                        <section className="counts-section-v3">
+                            <div className="counts-grid-v3">
+                                {moodOrder.map((mood) => (
+                                    <div key={mood} className="count-chip-v3" style={{ borderColor: `${getMoodColor(mood)}44` }}>
+                                        <span className="count-chip-emoji">{getMoodEmoji(mood)}</span>
+                                        <span className="count-chip-name">{mood}</span>
+                                        <span className="count-chip-value">{stats.counts[mood] || 0}</span>
                                     </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Separate Div for Timeline/Comments */}
-                        <div className="timeline-section-wrapper">
-                            <div className="detail-info-row">
-                                <h3 className="section-title">Timeline</h3>
-                                <button className="detail-add-btn" onClick={onAddMood}>
-                                    <Plus size={14} /> Share Vibe
-                                </button>
+                                ))}
                             </div>
 
-                            <div className="contributions-list">
+                            <div className="count-summary-v3">
+                                <span>{stats.totalEntries} total entries</span>
+                                <span>★ {stats.avgRating.toFixed(1)} avg rating</span>
+                            </div>
+                        </section>
+
+                        <section className="action-section-v3">
+                            <button className="add-edit-btn-v3" onClick={onAddMood}>
+                                <Plus size={14} /> Add / Edit Mood
+                            </button>
+                        </section>
+
+                        <section className="thread-shell-v3">
+                            <div className="thread-header-v3">
+                                <h3>Timeline • Replies • Ratings</h3>
+                            </div>
+
+                            <div className="thread-scroll-v3">
                                 {moods.map((entry) => (
-                                    <div key={entry._id} className="entry-card">
-                                        <div className="entry-header">
-                                            <div className="user-info">
-                                                <div className="user-avatar" style={{ border: `1px solid ${getMoodColor(entry.mood)}44` }}>
-                                                    <User size={14} />
+                                    <article key={entry._id} className="entry-card-v3">
+                                        <div className="entry-top-v3">
+                                            <div className="user-wrap-v3">
+                                                <div className="avatar-v3" style={{ borderColor: `${getMoodColor(entry.mood)}55` }}>
+                                                    <User size={13} />
                                                 </div>
                                                 <div>
-                                                    <p className="user-name">@{entry.userId.username}</p>
-                                                    <p className="entry-date">{new Date(entry.createdAt).toLocaleDateString()}</p>
+                                                    <p className="username-v3">@{entry.userId.username}</p>
+                                                    <p className="entry-date-v3">{new Date(entry.createdAt).toLocaleDateString()}</p>
                                                 </div>
                                             </div>
-                                            <div className="entry-badge" style={{ background: `${getMoodColor(entry.mood)}15`, border: `1px solid ${getMoodColor(entry.mood)}33`, color: getMoodColor(entry.mood) }}>
+
+                                            <div className="mood-pill-v3" style={{ color: getMoodColor(entry.mood), borderColor: `${getMoodColor(entry.mood)}55` }}>
                                                 {getMoodEmoji(entry.mood)} {entry.mood}
                                             </div>
                                         </div>
 
-                                        <div className="entry-body">
-                                            <div className="entry-rating">
-                                                {[1, 2, 3, 4, 5].map((s) => (
-                                                    <Star key={s} size={10} fill={s <= entry.rating ? '#f59e0b' : 'none'} stroke={s <= entry.rating ? '#f59e0b' : '#3f3f46'} />
-                                                ))}
-                                            </div>
-                                            <p className="entry-desc">{entry.description}</p>
-
-                                            {entry.images.length > 0 && (
-                                                <div className="entry-images">
-                                                    {entry.images.map((img, i) => (
-                                                        <img key={i} src={img} alt="contributed" className="entry-mini-img" />
-                                                    ))}
-                                                </div>
-                                            )}
+                                        <div className="rating-row-v3">
+                                            {[1, 2, 3, 4, 5].map((star) => (
+                                                <Star
+                                                    key={star}
+                                                    size={11}
+                                                    fill={star <= entry.rating ? '#f59e0b' : 'none'}
+                                                    stroke={star <= entry.rating ? '#f59e0b' : '#3f3f46'}
+                                                />
+                                            ))}
                                         </div>
 
-                                        <div className="comments-section">
-                                            <div className="comments-scroll-area">
-                                                {entry.comments?.map((c) => (
-                                                    <div key={c._id} className="comment-item">
-                                                        <span className="comment-user">{c.userId.username}</span>
-                                                        <span className="comment-text">{c.text}</span>
+                                        <p className="entry-desc-v3">{entry.description || 'No description provided.'}</p>
+
+                                        {entry.images.length > 0 && (
+                                            <div className="entry-images-v3">
+                                                {entry.images.map((image, index) => (
+                                                    <img key={index} src={image} alt={`Entry image ${index + 1}`} className="entry-image-v3" />
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        <div className="comments-shell-v3">
+                                            <div className="comments-list-v3">
+                                                {(entry.comments || []).map((comment) => (
+                                                    <div key={comment._id} className="comment-item-v3">
+                                                        <span className="comment-user-v3">{comment.userId.username}</span>
+                                                        <span className="comment-text-v3">{comment.text}</span>
                                                     </div>
                                                 ))}
                                             </div>
-                                            <div className="comment-input-row">
+
+                                            <div className="comment-input-row-v3">
                                                 <input
                                                     type="text"
+                                                    className="comment-input-v3"
                                                     placeholder="Ask about this vibe..."
-                                                    className="comment-input"
                                                     value={commentText[entry._id] || ''}
-                                                    onChange={(e) => setCommentText({ ...commentText, [entry._id]: e.target.value })}
-                                                    onKeyDown={(e) => e.key === 'Enter' && handleCommentSubmit(entry._id)}
+                                                    onChange={(event) => {
+                                                        const value = event.target.value;
+                                                        setCommentText((prev) => ({ ...prev, [entry._id]: value }));
+                                                    }}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === 'Enter') {
+                                                            event.preventDefault();
+                                                            handleCommentSubmit(entry._id);
+                                                        }
+                                                    }}
                                                 />
-                                                <button className="comment-send" onClick={() => handleCommentSubmit(entry._id)}>
+                                                <button
+                                                    className="comment-send-v3"
+                                                    onClick={() => handleCommentSubmit(entry._id)}
+                                                    aria-label="Send comment"
+                                                >
                                                     <MessageSquare size={14} />
                                                 </button>
                                             </div>
                                         </div>
-                                    </div>
+                                    </article>
                                 ))}
                             </div>
-                        </div>
+                        </section>
                     </div>
 
                     <style jsx>{`
-                        .mood-detail-card {
-                            width: 100%;
-                            max-width: 500px;
-                            height: 300px;
+                        .mood-detail-card-v3 {
+                            width: min(98vw, 1200px);
+                            height: 675px;
+                            max-height: calc(100vh - 32px);
                             background: #121214;
-                            border-radius: 28px;
+                            border-radius: 24px;
                             border: 1px solid rgba(255, 255, 255, 0.08);
+                            box-shadow: 0 40px 120px rgba(0, 0, 0, 1);
                             overflow: hidden;
                             display: flex;
                             flex-direction: column;
-                            box-shadow: 0 40px 120px rgba(0,0,0,1);
                         }
-                        
-                        /* New Header Style */
-                        .new-modal-header {
-                            padding: 16px 24px 12px;
-                            position: relative;
+
+                        .modal-header-v3 {
                             display: flex;
-                            justify-content: center;
-                            background: linear-gradient(to bottom, rgba(255,255,255,0.02), transparent);
-                        }
-                        .header-vibe-center {
-                            display: flex;
-                            flex-direction: column;
+                            justify-content: space-between;
                             align-items: center;
-                            gap: 6px;
+                            padding: 10px 14px;
+                            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+                            background: linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0) 100%);
                         }
-                        .dominant-title {
-                            font-size: 24px;
-                            font-weight: 900;
-                            letter-spacing: -1px;
+
+                        .dominant-wrap {
+                            display: flex;
+                            align-items: center;
+                            gap: 8px;
                         }
-                        .stats-label {
-                            font-size: 8px;
-                            color: #71717a;
+
+                        .dominant-emoji {
+                            width: 34px;
+                            height: 34px;
+                            border-radius: 999px;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            font-size: 18px;
+                            box-shadow: 0 10px 22px rgba(0, 0, 0, 0.35);
+                        }
+
+                        .dominant-label {
+                            font-size: 9px;
                             text-transform: uppercase;
-                            letter-spacing: 1.5px;
+                            letter-spacing: 0.14em;
+                            color: #71717a;
                             font-weight: 800;
                         }
-                        .detail-close-btn {
-                            position: absolute;
-                            top: 20px;
-                            right: 24px;
-                            background: rgba(255,255,255,0.03);
-                            border: 1px solid rgba(255,255,255,0.05);
-                            color: #52525b;
-                            width: 32px;
-                            height: 32px;
-                            border-radius: 50%;
+
+                        .dominant-title {
+                            font-size: 18px;
+                            font-weight: 900;
+                            text-transform: capitalize;
+                            letter-spacing: -0.02em;
+                        }
+
+                        .dominant-place {
+                            font-size: 10px;
+                            color: #71717a;
+                            margin-top: 2px;
+                            max-width: 540px;
+                            white-space: nowrap;
+                            overflow: hidden;
+                            text-overflow: ellipsis;
+                        }
+
+                        .close-btn {
+                            width: 30px;
+                            height: 30px;
+                            border-radius: 999px;
+                            border: 1px solid rgba(255, 255, 255, 0.1);
+                            background: rgba(255, 255, 255, 0.03);
+                            color: #a1a1aa;
                             display: flex;
                             align-items: center;
                             justify-content: center;
                             cursor: pointer;
-                            transition: all 0.2s;
-                        }
-                        .detail-close-btn:hover {
-                            background: rgba(255,255,255,0.08);
-                            color: white;
+                            transition: all 0.2s ease;
                         }
 
-                        /* Content Scrolling */
-                        .detail-scroll-container {
+                        .close-btn:hover {
+                            color: #ffffff;
+                            background: rgba(255, 255, 255, 0.08);
+                        }
+
+                        .modal-body-v3 {
                             flex: 1;
-                            overflow-y: auto;
-                            padding: 0 24px 24px;
-                        }
-                        .detail-scroll-container::-webkit-scrollbar {
-                            width: 6px;
-                        }
-                        .detail-scroll-container::-webkit-scrollbar-thumb {
-                            background: rgba(255, 255, 255, 0.05);
-                            border-radius: 3px;
+                            min-height: 0;
+                            padding: 8px 14px 12px;
+                            display: flex;
+                            flex-direction: column;
+                            gap: 8px;
                         }
 
-                        /* Gallery */
-                        .detail-header-gallery {
-                            height: 120px;
-                            border-radius: 20px;
-                            overflow: hidden;
-                            background: #000;
-                            margin-bottom: 16px;
-                            border: 1px solid rgba(255,255,255,0.05);
+                        .gallery-section-v3 {
+                            flex-shrink: 0;
                         }
-                        .gallery-main {
-                            width: 100%;
-                            height: 100%;
+
+                        .gallery-shell-v3 {
                             position: relative;
+                            height: 150px;
+                            border-radius: 16px;
+                            overflow: hidden;
+                            border: 1px solid rgba(255, 255, 255, 0.08);
+                            background: #0b0b0f;
                         }
-                        .gallery-img {
+
+                        .gallery-image-v3 {
                             width: 100%;
                             height: 100%;
                             object-fit: cover;
                         }
-                        .gallery-placeholder {
-                            width: 100%;
-                            height: 100%;
+
+                        .gallery-empty-v3 {
+                            height: 120px;
+                            border-radius: 16px;
+                            border: 1px dashed rgba(255, 255, 255, 0.15);
                             display: flex;
                             align-items: center;
                             justify-content: center;
-                            background: #09090b;
+                            color: #71717a;
+                            font-weight: 700;
+                            font-size: 12px;
                         }
-                        .placeholder-content {
-                            text-align: center;
-                            color: #3f3f46;
-                            font-weight: 800;
-                        }
+
                         .gallery-nav {
                             position: absolute;
                             top: 50%;
                             transform: translateY(-50%);
-                            background: rgba(0,0,0,0.4);
-                            border: none;
-                            color: white;
                             width: 32px;
                             height: 32px;
-                            border-radius: 50%;
-                            cursor: pointer;
+                            border-radius: 999px;
+                            border: 1px solid rgba(255, 255, 255, 0.2);
+                            background: rgba(0, 0, 0, 0.45);
+                            color: #fff;
                             display: flex;
                             align-items: center;
                             justify-content: center;
-                            backdrop-filter: blur(8px);
+                            cursor: pointer;
                         }
-                        .gallery-nav.prev { left: 12px; }
-                        .gallery-nav.next { right: 12px; }
+
+                        .gallery-nav.prev {
+                            left: 10px;
+                        }
+
+                        .gallery-nav.next {
+                            right: 10px;
+                        }
+
                         .gallery-dots {
                             position: absolute;
-                            bottom: 12px;
+                            bottom: 10px;
                             left: 50%;
                             transform: translateX(-50%);
                             display: flex;
-                            gap: 4px;
-                        }
-                        .dot {
-                            width: 4px;
-                            height: 4px;
-                            border-radius: 50%;
-                            background: rgba(255,255,255,0.2);
-                        }
-                        .dot.active { background: #fff; width: 12px; border-radius: 2px; }
-
-                        /* Stats Section */
-                        .stats-section-compact {
-                            margin-bottom: 16px;
-                        }
-                        .distribution-bar {
-                            height: 6px;
-                            width: 100%;
-                            border-radius: 3px;
-                            overflow: hidden;
-                            display: flex;
-                            background: #18181b;
-                            margin-bottom: 12px;
-                        }
-                        .dist-segment {
-                            height: 100%;
-                            transition: width 1s;
-                        }
-                        .distribution-legend-row {
-                            display: flex;
-                            flex-wrap: wrap;
-                            gap: 8px;
-                            align-items: center;
-                        }
-                        .legend-item-pill {
-                            display: flex;
-                            align-items: center;
                             gap: 6px;
-                            background: rgba(255,255,255,0.02);
-                            padding: 4px 10px;
-                            border-radius: 100px;
-                        }
-                        .pill-emoji { font-size: 14px; }
-                        .pill-count { font-size: 11px; font-weight: 800; color: white; }
-                        .total-pill {
-                            font-size: 10px;
-                            font-weight: 800;
-                            color: #52525b;
-                            text-transform: uppercase;
-                            margin-left: auto;
                         }
 
-                        /* Wrapped Timeline Section */
-                        .timeline-section-wrapper {
-                            background: rgba(255,255,255,0.02);
-                            border: 1px solid rgba(255,255,255,0.05);
-                            border-radius: 24px;
-                            padding: 20px;
-                        }
-                        .detail-info-row {
-                            display: flex;
-                            justify-content: space-between;
-                            align-items: center;
-                            margin-bottom: 16px;
-                        }
-                        .section-title {
-                            font-size: 12px;
-                            font-weight: 900;
-                            color: #a1a1aa;
-                            text-transform: uppercase;
-                            letter-spacing: 1px;
-                        }
-                        .detail-add-btn {
-                            background: white;
-                            color: black;
+                        .dot {
+                            width: 6px;
+                            height: 6px;
+                            border-radius: 999px;
                             border: none;
-                            padding: 6px 14px;
-                            border-radius: 100px;
+                            background: rgba(255, 255, 255, 0.35);
+                            padding: 0;
+                            cursor: pointer;
+                        }
+
+                        .dot.active {
+                            width: 14px;
+                            background: #ffffff;
+                        }
+
+                        .counts-section-v3 {
+                            flex-shrink: 0;
+                            border: 1px solid rgba(255, 255, 255, 0.06);
+                            border-radius: 14px;
+                            padding: 6px;
+                            background: rgba(255, 255, 255, 0.02);
+                        }
+
+                        .counts-grid-v3 {
+                            display: grid;
+                            grid-template-columns: repeat(5, minmax(0, 1fr));
+                            gap: 6px;
+                        }
+
+                        .count-chip-v3 {
+                            border: 1px solid;
+                            border-radius: 12px;
+                            padding: 5px;
+                            display: flex;
+                            align-items: center;
+                            gap: 4px;
+                            background: rgba(0, 0, 0, 0.2);
+                        }
+
+                        .count-chip-emoji {
+                            font-size: 14px;
+                        }
+
+                        .count-chip-name {
+                            font-size: 9px;
+                            text-transform: capitalize;
+                            color: #a1a1aa;
+                            font-weight: 700;
+                            flex: 1;
+                            min-width: 0;
+                            white-space: nowrap;
+                            overflow: hidden;
+                            text-overflow: ellipsis;
+                        }
+
+                        .count-chip-value {
                             font-size: 11px;
                             font-weight: 900;
+                            color: #ffffff;
+                        }
+
+                        .count-summary-v3 {
+                            margin-top: 6px;
                             display: flex;
+                            justify-content: space-between;
+                            font-size: 10px;
+                            color: #a1a1aa;
+                            text-transform: uppercase;
+                            font-weight: 700;
+                        }
+
+                        .action-section-v3 {
+                            flex-shrink: 0;
+                        }
+
+                        .add-edit-btn-v3 {
+                            border: none;
+                            border-radius: 999px;
+                            padding: 7px 12px;
+                            background: #ffffff;
+                            color: #000000;
+                            font-size: 11px;
+                            font-weight: 900;
+                            display: inline-flex;
                             align-items: center;
                             gap: 6px;
                             cursor: pointer;
                         }
-                        
-                        .contributions-list {
+
+                        .thread-shell-v3 {
+                            flex: 0 0 300px;
+                            height: 300px;
+                            min-height: 300px;
+                            border: 1px solid rgba(255, 255, 255, 0.06);
+                            border-radius: 16px;
+                            background: rgba(255, 255, 255, 0.02);
+                            padding: 8px;
                             display: flex;
                             flex-direction: column;
-                            gap: 16px;
                         }
-                        .entry-card {
-                            background: rgba(0,0,0,0.2);
-                            border: 1px solid rgba(255,255,255,0.03);
-                            border-radius: 16px;
-                            padding: 16px;
+
+                        .thread-header-v3 {
+                            margin-bottom: 8px;
+                            flex-shrink: 0;
                         }
-                        .entry-header {
+
+                        .thread-header-v3 h3 {
+                            font-size: 11px;
+                            text-transform: uppercase;
+                            letter-spacing: 0.1em;
+                            color: #a1a1aa;
+                            font-weight: 900;
+                        }
+
+                        .thread-scroll-v3 {
+                            flex: 1;
+                            min-height: 0;
+                            overflow-y: scroll;
+                            display: flex;
+                            flex-direction: column;
+                            gap: 10px;
+                            padding-right: 4px;
+                            scrollbar-gutter: stable;
+                        }
+
+                        .thread-scroll-v3::-webkit-scrollbar {
+                            width: 6px;
+                        }
+
+                        .thread-scroll-v3::-webkit-scrollbar-thumb {
+                            background: rgba(255, 255, 255, 0.12);
+                            border-radius: 999px;
+                        }
+
+                        .entry-card-v3 {
+                            border-radius: 14px;
+                            border: 1px solid rgba(255, 255, 255, 0.06);
+                            background: rgba(0, 0, 0, 0.28);
+                            padding: 10px;
+                        }
+
+                        .entry-top-v3 {
                             display: flex;
                             justify-content: space-between;
-                            margin-bottom: 12px;
-                        }
-                        .user-info {
-                            display: flex;
-                            gap: 10px;
                             align-items: center;
+                            gap: 8px;
                         }
-                        .user-avatar {
+
+                        .user-wrap-v3 {
+                            display: flex;
+                            align-items: center;
+                            gap: 8px;
+                            min-width: 0;
+                        }
+
+                        .avatar-v3 {
                             width: 28px;
                             height: 28px;
-                            background: #18181b;
-                            border-radius: 50%;
+                            border-radius: 999px;
+                            border: 1px solid;
                             display: flex;
                             align-items: center;
                             justify-content: center;
                             color: #a1a1aa;
-                        }
-                        .user-name { font-size: 12px; font-weight: 800; color: white; }
-                        .entry-date { font-size: 9px; color: #52525b; }
-                        .entry-badge {
-                            padding: 4px 10px;
-                            border-radius: 10px;
-                            font-size: 10px;
-                            font-weight: 900;
-                        }
-                        .entry-body { margin-bottom: 16px; }
-                        .entry-rating { display: flex; gap: 2px; margin-bottom: 6px; }
-                        .entry-desc { color: #a1a1aa; font-size: 13px; line-height: 1.5; }
-                        .entry-images {
-                            display: flex;
-                            gap: 8px;
-                            margin-top: 12px;
-                        }
-                        .entry-mini-img {
-                            width: 48px;
-                            height: 48px;
-                            border-radius: 8px;
-                            object-fit: cover;
+                            background: rgba(255, 255, 255, 0.03);
+                            flex-shrink: 0;
                         }
 
-                        .comments-section {
-                            border-top: 1px solid rgba(255,255,255,0.05);
-                            padding-top: 12px;
+                        .username-v3 {
+                            font-size: 12px;
+                            color: #ffffff;
+                            font-weight: 800;
                         }
-                        .comments-scroll-area {
-                            max-height: 100px;
+
+                        .entry-date-v3 {
+                            font-size: 10px;
+                            color: #71717a;
+                        }
+
+                        .mood-pill-v3 {
+                            border: 1px solid;
+                            border-radius: 999px;
+                            padding: 4px 9px;
+                            font-size: 10px;
+                            font-weight: 900;
+                            text-transform: capitalize;
+                            white-space: nowrap;
+                        }
+
+                        .rating-row-v3 {
+                            margin-top: 6px;
+                            display: flex;
+                            gap: 2px;
+                        }
+
+                        .entry-desc-v3 {
+                            margin-top: 5px;
+                            font-size: 12px;
+                            color: #d4d4d8;
+                            line-height: 1.4;
+                            word-break: break-word;
+                        }
+
+                        .entry-images-v3 {
+                            margin-top: 8px;
+                            display: flex;
+                            gap: 6px;
+                            overflow-x: auto;
+                            padding-bottom: 2px;
+                        }
+
+                        .entry-image-v3 {
+                            width: 46px;
+                            height: 46px;
+                            border-radius: 8px;
+                            object-fit: cover;
+                            flex-shrink: 0;
+                        }
+
+                        .comments-shell-v3 {
+                            margin-top: 8px;
+                            padding-top: 8px;
+                            border-top: 1px solid rgba(255, 255, 255, 0.06);
+                        }
+
+                        .comments-list-v3 {
+                            max-height: 64px;
                             overflow-y: auto;
                             display: flex;
                             flex-direction: column;
-                            gap: 8px;
+                            gap: 6px;
+                            padding-right: 2px;
                         }
-                        .comment-item { font-size: 11px; }
-                        .comment-user { font-weight: 800; color: #a1a1aa; margin-right: 8px; }
-                        .comment-text { color: #71717a; }
-                        .comment-input-row {
+
+                        .comment-item-v3 {
+                            font-size: 11px;
+                            line-height: 1.35;
+                        }
+
+                        .comment-user-v3 {
+                            color: #ffffff;
+                            font-weight: 800;
+                            margin-right: 7px;
+                        }
+
+                        .comment-text-v3 {
+                            color: #a1a1aa;
+                        }
+
+                        .comment-input-row-v3 {
+                            margin-top: 6px;
                             display: flex;
-                            gap: 10px;
-                            background: rgba(0,0,0,0.3);
+                            align-items: center;
+                            gap: 8px;
                             border-radius: 12px;
-                            padding: 8px 14px;
-                            margin-top: 12px;
-                            border: 1px solid rgba(255,255,255,0.03);
+                            border: 1px solid rgba(255, 255, 255, 0.08);
+                            background: rgba(0, 0, 0, 0.25);
+                            padding: 6px 9px;
                         }
-                        .comment-input {
-                            background: none;
-                            border: none;
-                            color: white;
-                            font-size: 12px;
+
+                        .comment-input-v3 {
                             flex: 1;
+                            min-width: 0;
+                            border: none;
+                            background: transparent;
+                            color: #ffffff;
+                            font-size: 11px;
                             outline: none;
                         }
-                        .comment-send { background: none; border: none; color: #3b82f6; cursor: pointer; }
-                        
-                        .dominant-sticker {
-                            width: 48px;
-                            height: 48px;
-                            border-radius: 50%;
+
+                        .comment-send-v3 {
+                            border: none;
+                            background: transparent;
+                            color: #3b82f6;
                             display: flex;
                             align-items: center;
                             justify-content: center;
-                            font-size: 24px;
-                            box-shadow: 0 0 20px rgba(255,255,255,0.1);
+                            cursor: pointer;
+                            padding: 0;
                         }
-                        .pulse {
-                            animation: pulse-glow 2s infinite;
+
+                        @media (max-width: 900px) {
+                            .counts-grid-v3 {
+                                grid-template-columns: repeat(3, minmax(0, 1fr));
+                            }
                         }
-                        @keyframes pulse-glow {
-                            0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,255,255,0.1); }
-                            70% { transform: scale(1.05); box-shadow: 0 0 0 10px rgba(255,255,255,0); }
-                            100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255,255,255,0); }
+
+                        @media (max-width: 768px) {
+                            .mood-detail-card-v3 {
+                                width: min(96vw, 720px);
+                                height: 675px;
+                                max-height: calc(100vh - 24px);
+                            }
+
+                            .modal-body-v3 {
+                                padding: 10px 14px 14px;
+                                gap: 10px;
+                            }
+
+                            .gallery-shell-v3 {
+                                height: 160px;
+                            }
+
+                            .thread-shell-v3 {
+                                flex: 0 0 280px;
+                                height: 280px;
+                                min-height: 280px;
+                            }
+
+                            .counts-grid-v3 {
+                                grid-template-columns: repeat(2, minmax(0, 1fr));
+                            }
+
+                            .count-summary-v3 {
+                                flex-direction: column;
+                                gap: 4px;
+                            }
                         }
                     `}</style>
                 </motion.div>
