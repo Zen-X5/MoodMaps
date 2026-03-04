@@ -10,14 +10,19 @@ import Atmosphere from './Atmosphere';
 import MoodModal from './MoodModal';
 import AuthOverlay from './AuthOverlay';
 import api from '@/lib/api';
+import { io } from 'socket.io-client';
 
 // Replace with your actual Mapbox token
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
+
+const SOCKET_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000';
 
 const Map: React.FC = () => {
     const mapContainer = useRef<HTMLDivElement>(null);
     // @ts-ignore
     const map = useRef<mapboxgl.Map | null>(null);
+    const socketRef = useRef<any>(null);
+
     const [lng, setLng] = useState(-70.9);
     const [lat, setLat] = useState(42.35);
     const [zoom, setZoom] = useState(9);
@@ -28,6 +33,28 @@ const Map: React.FC = () => {
     const [selectedCoords, setSelectedCoords] = useState<{ lat: number; lng: number } | null>(null);
     const [user, setUser] = useState<any>(null);
     const [dominantMood, setDominantMood] = useState<any>(null);
+    const [moods, setMoods] = useState<any[]>([]);
+    const [filterMood, setFilterMood] = useState<string | null>(null);
+
+    // Socket Initialization
+    useEffect(() => {
+        socketRef.current = io(SOCKET_URL);
+
+        socketRef.current.on('connect', () => {
+            console.log('Connected to socket server');
+        });
+
+        socketRef.current.on('new_mood', (newMood: any) => {
+            console.log('Real-time mood received:', newMood);
+            // Re-fetch all to ensure synchronization and trigger re-render
+            fetchMoods();
+            fetchDominantMood();
+        });
+
+        return () => {
+            socketRef.current.disconnect();
+        };
+    }, []);
 
     useEffect(() => {
         // Load user from storage
@@ -68,7 +95,7 @@ const Map: React.FC = () => {
                 fetchDominantMood();
             });
         }
-    }, []);
+    }, [filterMood]);
 
     const fetchDominantMood = async () => {
         if (!map.current) return;
@@ -87,7 +114,8 @@ const Map: React.FC = () => {
         try {
             const { data } = await api.get('/moods');
             if (data.success) {
-                renderMarkers(data.data);
+                setMoods(data.data);
+                renderMarkers(data.data, filterMood);
             }
         } catch (err) {
             console.error('Failed to fetch moods:', err);
@@ -106,7 +134,7 @@ const Map: React.FC = () => {
         }
     };
 
-    const renderMarkers = (moods: any[]) => {
+    const renderMarkers = (moodsList: any[], filter: string | null) => {
         if (!map.current) return;
 
         // Clear existing markers
@@ -115,7 +143,9 @@ const Map: React.FC = () => {
             elements[0].parentNode?.removeChild(elements[0]);
         }
 
-        moods.forEach((m) => {
+        const filtered = filter ? moodsList.filter(m => m.mood === filter) : moodsList;
+
+        filtered.forEach((m) => {
             if (!m.location?.coordinates || m.location.coordinates[0] === 0) return;
 
             const color = getMoodColor(m.mood);
@@ -197,6 +227,8 @@ const Map: React.FC = () => {
         }
     };
 
+    const moodOptions = ['romantic', 'lonely', 'chill', 'nostalgic', 'unsafe'];
+
     return (
         <div style={{ position: 'relative', width: '100%', height: '100%' }}>
             {/* Background Glow Effect */}
@@ -215,6 +247,25 @@ const Map: React.FC = () => {
                 ref={mapContainer}
                 style={{ position: 'absolute', inset: 0 }}
             />
+
+            {/* Filter Bar */}
+            <div className="filter-bar">
+                <button
+                    className={`filter-item ${!filterMood ? 'active' : ''}`}
+                    onClick={() => { setFilterMood(null); renderMarkers(moods, null); }}
+                >
+                    All
+                </button>
+                {moodOptions.map(mood => (
+                    <button
+                        key={mood}
+                        className={`filter-item ${filterMood === mood ? 'active' : ''}`}
+                        onClick={() => { setFilterMood(mood); renderMarkers(moods, mood); }}
+                    >
+                        {getMoodEmoji(mood)}
+                    </button>
+                ))}
+            </div>
 
             {/* Top Bar Overlay */}
             <div className="stats-bar">
@@ -287,6 +338,45 @@ const Map: React.FC = () => {
                 }
                 .mapboxgl-popup-tip {
                     border-top-color: #09090b !important;
+                }
+                .filter-bar {
+                    position: absolute;
+                    bottom: 120px;
+                    right: 20px;
+                    z-index: 100;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 12px;
+                    background: rgba(9, 9, 11, 0.6);
+                    backdrop-filter: blur(20px);
+                    padding: 8px;
+                    border-radius: 20px;
+                    border: 1px solid rgba(255, 255, 255, 0.1);
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+                }
+                .filter-item {
+                    width: 44px;
+                    height: 44px;
+                    border-radius: 12px;
+                    border: 1px solid transparent;
+                    background: rgba(255, 255, 255, 0.05);
+                    color: white;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: pointer;
+                    transition: all 0.3s ease;
+                    font-size: 18px;
+                    font-weight: 700;
+                }
+                .filter-item:hover {
+                    background: rgba(255, 255, 255, 0.1);
+                    transform: scale(1.1);
+                }
+                .filter-item.active {
+                    background: white;
+                    color: black;
+                    box-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
                 }
                 .custom-marker-container {
                     cursor: pointer;
