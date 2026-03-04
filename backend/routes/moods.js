@@ -39,6 +39,10 @@ router.post('/', protect, async (req, res) => {
             existingMood.description = description;
             existingMood.updatedAt = Date.now();
             await existingMood.save();
+
+            // Emit socket event
+            req.io.emit('new_mood', existingMood);
+
             return res.status(200).json({ success: true, data: existingMood, updated: true });
         }
 
@@ -48,6 +52,9 @@ router.post('/', protect, async (req, res) => {
             mood,
             description,
         });
+
+        // Emit socket event
+        req.io.emit('new_mood', newMood);
 
         res.status(201).json({ success: true, data: newMood });
     } catch (err) {

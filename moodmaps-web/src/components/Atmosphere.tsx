@@ -139,7 +139,7 @@ const NostalgicGrain = () => (
             background: 'rgba(245, 158, 11, 0.08)',
             zIndex: 41,
             pointerEvents: 'none',
-            mixBlendMode: 'sepia'
+            filter: 'sepia(0.5)'
         }}
     >
         {/* Moving Scratches / Grain Simulation */}
