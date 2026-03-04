@@ -156,7 +156,15 @@ router.get('/spot', async (req, res) => {
         }
 
         const moods = await Mood.find({
-            'location.coordinates': [parseFloat(lng), parseFloat(lat)]
+            location: {
+                $near: {
+                    $geometry: {
+                        type: 'Point',
+                        coordinates: [parseFloat(lng), parseFloat(lat)]
+                    },
+                    $maxDistance: 2 // 2 meters to be safe with tile precision
+                }
+            }
         })
             .populate('userId', 'username')
             .populate('comments.userId', 'username')

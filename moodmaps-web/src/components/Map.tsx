@@ -14,7 +14,7 @@ import AuthOverlay from './AuthOverlay';
 import api from '@/lib/api';
 import { io } from 'socket.io-client';
 
-// Replace with your actual Mapbox token
+// Replace with your actual Mapbox token yesss
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5005';
@@ -255,35 +255,45 @@ const Map: React.FC = () => {
                     const color = getMoodColor(dominantMood);
 
                     el.innerHTML = `
-                        <div class="cluster-inner" style="border: 3px solid ${color}">
-                            <span class="cluster-emoji" style="display: block;">${emoji}</span>
-                            <span class="cluster-count">${props.point_count}</span>
+                        <div class="cluster-inner" style="border: 3px solid ${color}; pointer-events: auto;">
+                            <span class="cluster-emoji" style="display: block; pointer-events: none;">${emoji}</span>
+                            <span class="cluster-count" style="pointer-events: none;">${props.point_count}</span>
                         </div>
                     `;
-                    el.onclick = () => {
+                    el.style.pointerEvents = 'auto';
+                    el.addEventListener('click', (e) => {
+                        e.stopPropagation();
                         const source = map.current?.getSource('mood-source') as any;
                         source.getClusterExpansionZoom(props.cluster_id, (err: any, zoom: number) => {
                             if (err) return;
                             map.current?.easeTo({
                                 center: coords,
-                                zoom: zoom + 0.5, // Zoom slightly more for better impact
+                                zoom: zoom + 0.5,
                                 duration: 1000
                             });
                         });
-                    };
+                    });
                 } else {
                     el.className = 'custom-marker-container';
                     const color = getMoodColor(props.mood);
                     const emoji = getMoodEmoji(props.mood);
+                    const countBadge = props.count > 1 ? `
+                        <div style="position: absolute; top: -6px; right: -6px; background: white; color: black; font-size: 8px; font-weight: 900; width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 1.5px solid ${color}; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">
+                            ${props.count}
+                        </div>
+                    ` : '';
+
                     el.innerHTML = `
-                        <div class="marker-sticker" style="background: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; box-shadow: 0 4px 12px ${color}66; border: 2px solid ${color}; cursor: pointer;">
+                        <div class="marker-sticker" style="background: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; box-shadow: 0 4px 12px ${color}66; border: 2px solid ${color}; cursor: pointer; position: relative; pointer-events: auto;">
                             ${emoji}
+                            ${countBadge}
                         </div>
                     `;
-                    el.onclick = (e) => {
+                    el.style.pointerEvents = 'auto';
+                    el.addEventListener('click', (e) => {
                         e.stopPropagation();
                         fetchSpotDetails(coords[1], coords[0]);
-                    };
+                    });
                 }
 
                 marker = new mapboxgl.Marker({ element: el }).setLngLat(coords).addTo(map.current!);
@@ -303,17 +313,32 @@ const Map: React.FC = () => {
 
     const convertMoodsToGeoJSON = (moodsList: any[], filter: string | null): any => {
         const filtered = filter ? moodsList.filter(m => m.mood === filter) : moodsList;
+
+        // Group moods by exact coordinate
+        const spots: { [key: string]: { moods: any[], latest: any } } = {};
+
+        filtered.forEach(m => {
+            const key = `${m.location.coordinates[0]},${m.location.coordinates[1]}`;
+            if (!spots[key]) {
+                spots[key] = { moods: [], latest: m };
+            }
+            spots[key].moods.push(m);
+            // Assuming moodsList is sorted by createdAt desc, first one is latest
+            // If not, we could compare dates, but fetchMoods usually sorts.
+        });
+
         return {
             type: 'FeatureCollection',
-            features: filtered.map(m => ({
+            features: Object.entries(spots).map(([key, spot]) => ({
                 type: 'Feature',
                 geometry: {
                     type: 'Point',
-                    coordinates: m.location.coordinates
+                    coordinates: spot.latest.location.coordinates
                 },
                 properties: {
-                    mood: m.mood,
-                    id: m._id
+                    mood: spot.latest.mood,
+                    id: `spot-${key}`,
+                    count: spot.moods.length
                 }
             }))
         };
