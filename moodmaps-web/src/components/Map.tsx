@@ -35,6 +35,7 @@ const Map: React.FC = () => {
     const [dominantMood, setDominantMood] = useState<any>(null);
     const [moods, setMoods] = useState<any[]>([]);
     const [filterMood, setFilterMood] = useState<string | null>(null);
+    const [showHeatmap, setShowHeatmap] = useState(false);
 
     // Socket Initialization
     useEffect(() => {
@@ -46,7 +47,6 @@ const Map: React.FC = () => {
 
         socketRef.current.on('new_mood', (newMood: any) => {
             console.log('Real-time mood received:', newMood);
-            // Re-fetch all to ensure synchronization and trigger re-render
             fetchMoods();
             fetchDominantMood();
         });
@@ -55,6 +55,21 @@ const Map: React.FC = () => {
             socketRef.current.disconnect();
         };
     }, []);
+
+    // Mapbox Heatmap Source & Layer Update
+    useEffect(() => {
+        if (!map.current || !map.current.isStyleLoaded()) return;
+
+        const source = map.current.getSource('mood-heatmap') as any;
+        if (source) {
+            source.setData(convertMoodsToGeoJSON(moods, filterMood));
+        }
+
+        // Toggle visibility
+        if (map.current.getLayer('mood-heat')) {
+            map.current.setLayoutProperty('mood-heat', 'visibility', showHeatmap ? 'visible' : 'none');
+        }
+    }, [moods, filterMood, showHeatmap]);
 
     useEffect(() => {
         // Load user from storage
@@ -71,31 +86,179 @@ const Map: React.FC = () => {
                 zoom: zoom,
             });
 
-            map.current.on('move', () => {
-                setLng(Number(map.current?.getCenter().lng.toFixed(4)));
-                setLat(Number(map.current?.getCenter().lat.toFixed(4)));
-                setZoom(Number(map.current?.getZoom().toFixed(2)));
+            map.current.on('style.load', () => {
+                if (map.current) setupMapLayers();
             });
 
-            // Fetch dominant mood on moveend (debounced)
+            map.current.on('move', () => {
+                if (map.current) {
+                    setLng(Number(map.current.getCenter().lng.toFixed(4)));
+                    setLat(Number(map.current.getCenter().lat.toFixed(4)));
+                    setZoom(Number(map.current.getZoom().toFixed(2)));
+                }
+            });
+
             map.current.on('moveend', () => {
-                fetchDominantMood();
+                if (map.current) fetchDominantMood();
             });
 
             map.current.on('click', (e: any) => {
-                console.log('Map Clicked!', e.lngLat);
                 const { lng, lat } = e.lngLat;
                 setSelectedCoords({ lat, lng });
                 setIsModalOpen(true);
             });
 
-            // Initial fetch of moods
             map.current.on('load', () => {
-                fetchMoods();
-                fetchDominantMood();
+                if (map.current) {
+                    fetchMoods();
+                    fetchDominantMood();
+                }
             });
         }
     }, [filterMood]);
+
+    const setupMapLayers = () => {
+        if (!map.current) return;
+
+        map.current.addSource('mood-source', {
+            type: 'geojson',
+            data: convertMoodsToGeoJSON([], null),
+            cluster: true,
+            clusterMaxZoom: 14,
+            clusterRadius: 50,
+            clusterProperties: {
+                'romantic': ['+', ['case', ['==', ['get', 'mood'], 'romantic'], 1, 0]],
+                'lonely': ['+', ['case', ['==', ['get', 'mood'], 'lonely'], 1, 0]],
+                'chill': ['+', ['case', ['==', ['get', 'mood'], 'chill'], 1, 0]],
+                'nostalgic': ['+', ['case', ['==', ['get', 'mood'], 'nostalgic'], 1, 0]],
+                'unsafe': ['+', ['case', ['==', ['get', 'mood'], 'unsafe'], 1, 0]],
+            }
+        });
+
+        // Heatmap Layer (behind markers)
+        map.current.addLayer({
+            id: 'mood-heat',
+            type: 'heatmap',
+            source: 'mood-source',
+            layout: { visibility: 'none' },
+            paint: {
+                'heatmap-weight': 1,
+                'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 1, 9, 3],
+                'heatmap-color': [
+                    'interpolate', ['linear'], ['heatmap-density'],
+                    0, 'rgba(33,102,172,0)',
+                    0.2, 'rgb(103,169,207)',
+                    0.4, 'rgb(209,229,240)',
+                    0.6, 'rgb(253,219,199)',
+                    0.8, 'rgb(239,138,98)',
+                    1, 'rgb(178,24,43)'
+                ],
+                'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 0, 2, 9, 20],
+                'heatmap-opacity': 0.8
+            }
+        }, 'waterway-label');
+
+        map.current.on('render', () => {
+            if (!map.current?.isSourceLoaded('mood-source')) return;
+            updateMarkers();
+        });
+    };
+
+    const markersRef = useRef<{ [key: string]: any }>({});
+
+    const updateMarkers = () => {
+        if (!map.current) return;
+
+        const newMarkers: { [key: string]: any } = {};
+        const features = map.current.querySourceFeatures('mood-source');
+
+        // Note: querySourceFeatures might return duplicates across tiles,
+        // but for HTML markers we'll keep it simple for now. 
+        // A better way is queryRenderedFeatures but that requires a dummy layer.
+
+        features.forEach((f: any) => {
+            const coords = f.geometry.coordinates as [number, number];
+            const props = f.properties;
+            const id = props.cluster ? `cluster-${props.cluster_id}` : `mood-${props.id}`;
+
+            if (newMarkers[id]) return;
+
+            let marker = markersRef.current[id];
+
+            if (!marker) {
+                const el = document.createElement('div');
+                if (props.cluster) {
+                    el.className = 'cluster-marker';
+                    const counts = {
+                        romantic: props.romantic,
+                        lonely: props.lonely,
+                        chill: props.chill,
+                        nostalgic: props.nostalgic,
+                        unsafe: props.unsafe
+                    };
+                    const dominantMood = Object.entries(counts).reduce((a, b) => a[1] > b[1] ? a : b)[0];
+                    const emoji = getMoodEmoji(dominantMood);
+                    const color = getMoodColor(dominantMood);
+
+                    el.innerHTML = `
+                        <div class="cluster-inner" style="border: 3px solid ${color}">
+                            <span class="cluster-emoji">${emoji}</span>
+                            <span class="cluster-count">${props.point_count}</span>
+                        </div>
+                    `;
+                    el.onclick = () => {
+                        const source = map.current?.getSource('mood-source') as any;
+                        source.getClusterExpansionZoom(props.cluster_id, (err: any, zoom: number) => {
+                            if (err) return;
+                            map.current?.easeTo({
+                                center: coords,
+                                zoom: zoom
+                            });
+                        });
+                    };
+                } else {
+                    el.className = 'custom-marker-container';
+                    const color = getMoodColor(props.mood);
+                    const emoji = getMoodEmoji(props.mood);
+                    el.innerHTML = `
+                        <div class="marker-sticker" style="background: white; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; box-shadow: 0 4px 12px ${color}66; border: 2px solid ${color}; cursor: pointer;">
+                            ${emoji}
+                        </div>
+                    `;
+                }
+
+                marker = new mapboxgl.Marker({ element: el }).setLngLat(coords).addTo(map.current!);
+            }
+
+            newMarkers[id] = marker;
+        });
+
+        // Remove old markers
+        for (const id in markersRef.current) {
+            if (!newMarkers[id]) {
+                markersRef.current[id].remove();
+            }
+        }
+        markersRef.current = newMarkers;
+    };
+
+    const convertMoodsToGeoJSON = (moodsList: any[], filter: string | null): any => {
+        const filtered = filter ? moodsList.filter(m => m.mood === filter) : moodsList;
+        return {
+            type: 'FeatureCollection',
+            features: filtered.map(m => ({
+                type: 'Feature',
+                geometry: {
+                    type: 'Point',
+                    coordinates: m.location.coordinates
+                },
+                properties: {
+                    mood: m.mood,
+                    id: m._id
+                }
+            }))
+        };
+    };
 
     const fetchDominantMood = async () => {
         if (!map.current) return;
@@ -115,7 +278,9 @@ const Map: React.FC = () => {
             const { data } = await api.get('/moods');
             if (data.success) {
                 setMoods(data.data);
-                renderMarkers(data.data, filterMood);
+                if (map.current?.getSource('mood-source')) {
+                    (map.current.getSource('mood-source') as any).setData(convertMoodsToGeoJSON(data.data, filterMood));
+                }
             }
         } catch (err) {
             console.error('Failed to fetch moods:', err);
@@ -250,6 +415,14 @@ const Map: React.FC = () => {
 
             {/* Filter Bar */}
             <div className="filter-bar">
+                <button
+                    className={`filter-item ${showHeatmap ? 'active' : ''}`}
+                    onClick={() => setShowHeatmap(!showHeatmap)}
+                    title="Toggle Heatmap"
+                >
+                    🔥
+                </button>
+                <div style={{ width: '100%', height: '1px', background: 'rgba(255,255,255,0.1)', margin: '4px 0' }} />
                 <button
                     className={`filter-item ${!filterMood ? 'active' : ''}`}
                     onClick={() => { setFilterMood(null); renderMarkers(moods, null); }}
@@ -391,6 +564,47 @@ const Map: React.FC = () => {
                     transform: scale(1.4) rotate(8deg) !important;
                     z-index: 100 !important;
                     animation-play-state: paused;
+                }
+                .cluster-marker {
+                    cursor: pointer;
+                    z-index: 20;
+                }
+                .cluster-inner {
+                    background: rgba(9, 9, 11, 0.9);
+                    backdrop-filter: blur(8px);
+                    width: 48px;
+                    height: 48px;
+                    border-radius: 50%;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    position: relative;
+                    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+                    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+                }
+                .cluster-inner:hover {
+                    transform: scale(1.2);
+                    background: rgba(255, 255, 255, 0.1);
+                }
+                .cluster-emoji {
+                    font-size: 24px;
+                }
+                .cluster-count {
+                    position: absolute;
+                    top: -5px;
+                    right: -5px;
+                    background: white;
+                    color: black;
+                    font-size: 10px;
+                    font-weight: 900;
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 50%;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    border: 2px solid #09090b;
+                    box-shadow: 0 4px 8px rgba(0,0,0,0.3);
                 }
                 @keyframes marker-float {
                     0%, 100% { transform: translateY(0) rotate(0); }

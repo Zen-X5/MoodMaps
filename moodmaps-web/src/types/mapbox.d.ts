@@ -1,4 +1,7 @@
-declare module 'mapbox-gl';
+declare module 'mapbox-gl' {
+    const content: any;
+    export default content;
+}
 declare module '@mapbox/point-geometry';
 declare module '@mapbox/vector-tile';
 declare module '@mapbox/unitbezier';
