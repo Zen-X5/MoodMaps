@@ -50,6 +50,15 @@ io.on('connection', (socket) => {
     });
 });
 
+// Global Error Handler
+app.use((err, req, res, next) => {
+    console.error('Error:', err.message);
+    res.status(err.status || 500).json({
+        success: false,
+        error: err.message || 'Internal Server Error'
+    });
+});
+
 // Database Connection
 mongoose
     .connect(process.env.MONGODB_URI)

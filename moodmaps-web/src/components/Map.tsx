@@ -2,12 +2,14 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { LogOut } from 'lucide-react';
 // @ts-ignore
 import mapboxgl from 'mapbox-gl';
 import 'mapbox-gl/dist/mapbox-gl.css';
 
 import Atmosphere from './Atmosphere';
 import MoodModal from './MoodModal';
+import MoodDetailModal from './MoodDetailModal';
 import AuthOverlay from './AuthOverlay';
 import api from '@/lib/api';
 import { io } from 'socket.io-client';
@@ -15,7 +17,7 @@ import { io } from 'socket.io-client';
 // Replace with your actual Mapbox token
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
 
-const SOCKET_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5000';
+const SOCKET_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5005';
 
 const Map: React.FC = () => {
     const mapContainer = useRef<HTMLDivElement>(null);
@@ -33,6 +35,8 @@ const Map: React.FC = () => {
 
     // States
     const [isModalOpen, setIsModalOpen] = useState(false);
+    const [isDetailOpen, setIsDetailOpen] = useState(false);
+    const [spotMoods, setSpotMoods] = useState<any[]>([]);
     const [isAuthOpen, setIsAuthOpen] = useState(false);
     const [selectedCoords, setSelectedCoords] = useState<{ lat: number; lng: number } | null>(null);
     const [user, setUser] = useState<any>(null);
@@ -276,6 +280,10 @@ const Map: React.FC = () => {
                             ${emoji}
                         </div>
                     `;
+                    el.onclick = (e) => {
+                        e.stopPropagation();
+                        fetchSpotDetails(coords[1], coords[0]);
+                    };
                 }
 
                 marker = new mapboxgl.Marker({ element: el }).setLngLat(coords).addTo(map.current!);
@@ -309,6 +317,36 @@ const Map: React.FC = () => {
                 }
             }))
         };
+    };
+
+    const fetchSpotDetails = async (lat: number, lng: number) => {
+        try {
+            const { data } = await api.get(`/moods/spot?lat=${lat}&lng=${lng}`);
+            if (data.success) {
+                setSpotMoods(data.data);
+                setSelectedCoords({ lat, lng });
+                setIsDetailOpen(true);
+            }
+        } catch (err) {
+            console.error('Failed to fetch spot details:', err);
+        }
+    };
+
+    const handleCommentSubmit = async (moodId: string, text: string) => {
+        if (!user) {
+            setIsAuthOpen(true);
+            return;
+        }
+
+        try {
+            const { data } = await api.post(`/moods/${moodId}/comments`, { text });
+            if (data.success) {
+                // Update local spotMoods state
+                setSpotMoods(prev => prev.map(m => m._id === moodId ? data.data : m));
+            }
+        } catch (err) {
+            console.error('Failed to post comment:', err);
+        }
     };
 
     const fetchDominantMood = async () => {
@@ -430,7 +468,7 @@ const Map: React.FC = () => {
         }
     };
 
-    const handleMoodSubmit = async (mood: string, description: string) => {
+    const handleMoodSubmit = async (mood: string, description: string, rating: number, imageFiles: File[]) => {
         if (!user) {
             setIsAuthOpen(true);
             return;
@@ -439,12 +477,22 @@ const Map: React.FC = () => {
         if (!selectedCoords) return;
 
         try {
-            const { data } = await api.post('/moods', {
-                mood,
-                description,
-                location: {
-                    type: 'Point',
-                    coordinates: [selectedCoords.lng, selectedCoords.lat]
+            const formData = new FormData();
+            formData.append('mood', mood);
+            formData.append('description', description);
+            formData.append('rating', rating.toString());
+            formData.append('location', JSON.stringify({
+                type: 'Point',
+                coordinates: [selectedCoords.lng, selectedCoords.lat]
+            }));
+
+            imageFiles.forEach(file => {
+                formData.append('images', file);
+            });
+
+            const { data } = await api.post('/moods', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data'
                 }
             });
 
@@ -452,10 +500,28 @@ const Map: React.FC = () => {
                 setIsModalOpen(false);
                 fetchMoods();
                 fetchDominantMood();
+                if (isDetailOpen) {
+                    fetchSpotDetails(selectedCoords.lat, selectedCoords.lng);
+                }
             }
         } catch (err: any) {
             console.error('Submission failed:', err);
-            if (err.response?.status === 401) setIsAuthOpen(true);
+            const errorMsg = err.response?.data?.error || 'Failed to share vibe. Please try again.';
+            alert(errorMsg);
+            if (err.response?.status === 401) {
+                setIsAuthOpen(true);
+                handleLogout(); // Clear the bad session
+            }
+        }
+    };
+
+    const handleLogout = () => {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        setUser(null);
+        if (socketRef.current) {
+            socketRef.current.disconnect();
+            socketRef.current = io(SOCKET_URL); // Re-init as guest
         }
     };
 
@@ -521,9 +587,17 @@ const Map: React.FC = () => {
 
             {/* Top Bar Overlay */}
             <div className="stats-bar">
-                <div>{lat.toFixed(4)}, {lng.toFixed(4)}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }}></div>
+                    {lat.toFixed(4)}, {lng.toFixed(4)}
+                </div>
                 {user ? (
-                    <div className="user-tag">@{user.username}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div className="user-tag">@{user.username}</div>
+                        <button onClick={handleLogout} className="logout-btn" title="Logout">
+                            <LogOut size={14} />
+                        </button>
+                    </div>
                 ) : (
                     <button onClick={() => setIsAuthOpen(true)} className="auth-btn-small">Sign In</button>
                 )}
@@ -572,6 +646,17 @@ const Map: React.FC = () => {
                 onSubmit={handleMoodSubmit}
                 lat={selectedCoords?.lat || 0}
                 lng={selectedCoords?.lng || 0}
+            />
+
+            <MoodDetailModal
+                isOpen={isDetailOpen}
+                onClose={() => setIsDetailOpen(false)}
+                moods={spotMoods}
+                onAddMood={() => {
+                    setIsDetailOpen(false);
+                    setIsModalOpen(true);
+                }}
+                onAddComment={handleCommentSubmit}
             />
 
             <AuthOverlay
