@@ -22,6 +22,10 @@ const Map: React.FC = () => {
     // @ts-ignore
     const map = useRef<mapboxgl.Map | null>(null);
     const socketRef = useRef<any>(null);
+    const userMarkerRef = useRef<mapboxgl.Marker | null>(null);
+    const watchId = useRef<number | null>(null);
+    const isFollowingRef = useRef<boolean>(false);
+    const isFlyingRef = useRef<boolean>(false);
 
     const [lng, setLng] = useState(-70.9);
     const [lat, setLat] = useState(42.35);
@@ -35,7 +39,10 @@ const Map: React.FC = () => {
     const [dominantMood, setDominantMood] = useState<any>(null);
     const [moods, setMoods] = useState<any[]>([]);
     const [filterMood, setFilterMood] = useState<string | null>(null);
-    const [showHeatmap, setShowHeatmap] = useState(false);
+    const [clusterEnabled, setClusterEnabled] = useState(true);
+    const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
+    const [isLocating, setIsLocating] = useState(false);
+    const [isFollowing, setIsFollowing] = useState(false);
 
     // Socket Initialization
     useEffect(() => {
@@ -56,65 +63,121 @@ const Map: React.FC = () => {
         };
     }, []);
 
-    // Mapbox Heatmap Source & Layer Update
+    // Mapbox Source Update
     useEffect(() => {
         if (!map.current || !map.current.isStyleLoaded()) return;
 
-        const source = map.current.getSource('mood-heatmap') as any;
+        const source = map.current.getSource('mood-source') as any;
         if (source) {
             source.setData(convertMoodsToGeoJSON(moods, filterMood));
         }
+    }, [moods, filterMood]);
 
-        // Toggle visibility
-        if (map.current.getLayer('mood-heat')) {
-            map.current.setLayoutProperty('mood-heat', 'visibility', showHeatmap ? 'visible' : 'none');
+    // Handle User Location Marker
+    useEffect(() => {
+        if (!map.current || !userLocation) return;
+
+        if (!userMarkerRef.current) {
+            const el = document.createElement('div');
+            el.className = 'user-location-container';
+            el.innerHTML = `
+                <div class="pulse-ring"></div>
+                <div class="user-location-marker"></div>
+            `;
+
+            userMarkerRef.current = new mapboxgl.Marker({ element: el })
+                .setLngLat(userLocation)
+                .addTo(map.current);
+        } else {
+            userMarkerRef.current.setLngLat(userLocation);
         }
-    }, [moods, filterMood, showHeatmap]);
+    }, [userLocation]);
+
+    // Re-initialize source when clustering is toggled
+    useEffect(() => {
+        if (!map.current || !map.current.isStyleLoaded()) return;
+
+        const currentMap = map.current;
+        if (currentMap.getSource('mood-source')) {
+            // Remove layers first
+            if (currentMap.getLayer('mood-dummy')) currentMap.removeLayer('mood-dummy');
+            currentMap.removeSource('mood-source');
+
+            setupMapLayers();
+            fetchMoods();
+        }
+    }, [clusterEnabled]);
 
     useEffect(() => {
         // Load user from storage
         const storedUser = localStorage.getItem('user');
         if (storedUser) setUser(JSON.parse(storedUser));
 
-        if (map.current) return;
+        if (map.current || !mapContainer.current) return;
 
-        if (mapContainer.current) {
-            map.current = new mapboxgl.Map({
-                container: mapContainer.current,
-                style: 'mapbox://styles/mapbox/dark-v11',
-                center: [lng, lat],
-                zoom: zoom,
-            });
+        // Try to get initial location for the map startup
+        const startPos: [number, number] = [lng, lat];
 
-            map.current.on('style.load', () => {
-                if (map.current) setupMapLayers();
-            });
+        const m = new mapboxgl.Map({
+            container: mapContainer.current,
+            style: 'mapbox://styles/mapbox/dark-v11',
+            center: startPos,
+            zoom: zoom,
+            pitch: 39, // <--- 3D Tilt: Change this value to adjust the angle (0-85)
+            bearing: 0
+        });
+        map.current = m;
 
-            map.current.on('move', () => {
-                if (map.current) {
-                    setLng(Number(map.current.getCenter().lng.toFixed(4)));
-                    setLat(Number(map.current.getCenter().lat.toFixed(4)));
-                    setZoom(Number(map.current.getZoom().toFixed(2)));
-                }
-            });
-
-            map.current.on('moveend', () => {
-                if (map.current) fetchDominantMood();
-            });
-
-            map.current.on('click', (e: any) => {
-                const { lng, lat } = e.lngLat;
-                setSelectedCoords({ lat, lng });
-                setIsModalOpen(true);
-            });
-
-            map.current.on('load', () => {
-                if (map.current) {
-                    fetchMoods();
-                    fetchDominantMood();
-                }
-            });
+        // Auto-detect and fly to user location on start
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const { longitude, latitude } = position.coords;
+                    setUserLocation([longitude, latitude]);
+                    m.flyTo({
+                        center: [longitude, latitude],
+                        zoom: 13,
+                        pitch: 45, // Maintain 3D tilt during auto-center
+                        duration: 3000,
+                        essential: true
+                    });
+                },
+                (err) => console.log('Initial geolocation skipped:', err),
+                { timeout: 5000, enableHighAccuracy: false }
+            );
         }
+
+        m.on('style.load', () => {
+            setupMapLayers();
+            // Initial data load
+            fetchMoods();
+            fetchDominantMood();
+        });
+
+        m.on('move', () => {
+            setLng(Number(m.getCenter().lng.toFixed(4)));
+            setLat(Number(m.getCenter().lat.toFixed(4)));
+            setZoom(Number(m.getZoom().toFixed(2)));
+
+            // If user manually drags while following, break follow
+            if (isFollowingRef.current && !isFlyingRef.current) {
+                setIsFollowing(false);
+                isFollowingRef.current = false;
+            }
+        });
+
+        m.on('moveend', () => {
+            fetchDominantMood();
+            isFlyingRef.current = false; // Reset flying flag
+        });
+
+        m.on('click', (e: any) => {
+            const { lng, lat } = e.lngLat;
+            setSelectedCoords({ lat, lng });
+            setIsModalOpen(true);
+        });
+
+        // Remove map.current.on('load') as style.load + manual fetch is more reliable
     }, [filterMood]);
 
     const setupMapLayers = () => {
@@ -122,8 +185,8 @@ const Map: React.FC = () => {
 
         map.current.addSource('mood-source', {
             type: 'geojson',
-            data: convertMoodsToGeoJSON([], null),
-            cluster: true,
+            data: convertMoodsToGeoJSON(moods, filterMood),
+            cluster: clusterEnabled,
             clusterMaxZoom: 14,
             clusterRadius: 50,
             clusterProperties: {
@@ -135,29 +198,13 @@ const Map: React.FC = () => {
             }
         });
 
-        // Heatmap Layer (behind markers)
+        // Dummy Layer to force source loading
         map.current.addLayer({
-            id: 'mood-heat',
-            type: 'heatmap',
+            id: 'mood-dummy',
+            type: 'circle',
             source: 'mood-source',
-            layout: { visibility: 'none' },
-            paint: {
-                'heatmap-weight': 1,
-                'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 1, 9, 3],
-                'heatmap-color': [
-                    'interpolate', ['linear'], ['heatmap-density'],
-                    0, 'rgba(33,102,172,0)',
-                    0.2, 'rgb(103,169,207)',
-                    0.4, 'rgb(209,229,240)',
-                    0.6, 'rgb(253,219,199)',
-                    0.8, 'rgb(239,138,98)',
-                    1, 'rgb(178,24,43)'
-                ],
-                'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 0, 2, 9, 20],
-                'heatmap-opacity': 0.8
-            }
-        }, 'waterway-label');
-
+            paint: { 'circle-radius': 0, 'circle-opacity': 0 }
+        });
         map.current.on('render', () => {
             if (!map.current?.isSourceLoaded('mood-source')) return;
             updateMarkers();
@@ -176,7 +223,7 @@ const Map: React.FC = () => {
         // but for HTML markers we'll keep it simple for now. 
         // A better way is queryRenderedFeatures but that requires a dummy layer.
 
-        features.forEach((f: any) => {
+        features.forEach((f: any, index: number) => {
             const coords = f.geometry.coordinates as [number, number];
             const props = f.properties;
             const id = props.cluster ? `cluster-${props.cluster_id}` : `mood-${props.id}`;
@@ -187,6 +234,9 @@ const Map: React.FC = () => {
 
             if (!marker) {
                 const el = document.createElement('div');
+                // Stagger effect for "seeable" splitting
+                el.style.animationDelay = `${(index % 20) * 30}ms`;
+
                 if (props.cluster) {
                     el.className = 'cluster-marker';
                     const counts = {
@@ -196,13 +246,13 @@ const Map: React.FC = () => {
                         nostalgic: props.nostalgic,
                         unsafe: props.unsafe
                     };
-                    const dominantMood = Object.entries(counts).reduce((a, b) => a[1] > b[1] ? a : b)[0];
+                    const dominantMood = Object.entries(counts).reduce((a, b: any) => a[1] > b[1] ? a : b)[0];
                     const emoji = getMoodEmoji(dominantMood);
                     const color = getMoodColor(dominantMood);
 
                     el.innerHTML = `
                         <div class="cluster-inner" style="border: 3px solid ${color}">
-                            <span class="cluster-emoji">${emoji}</span>
+                            <span class="cluster-emoji" style="display: block;">${emoji}</span>
                             <span class="cluster-count">${props.point_count}</span>
                         </div>
                     `;
@@ -212,7 +262,8 @@ const Map: React.FC = () => {
                             if (err) return;
                             map.current?.easeTo({
                                 center: coords,
-                                zoom: zoom
+                                zoom: zoom + 0.5, // Zoom slightly more for better impact
+                                duration: 1000
                             });
                         });
                     };
@@ -299,58 +350,74 @@ const Map: React.FC = () => {
         }
     };
 
-    const renderMarkers = (moodsList: any[], filter: string | null) => {
-        if (!map.current) return;
 
-        // Clear existing markers
-        const elements = document.getElementsByClassName('mapboxgl-marker');
-        while (elements.length > 0) {
-            elements[0].parentNode?.removeChild(elements[0]);
+    const handleGoToLocation = () => {
+        if (!navigator.geolocation) {
+            alert('Geolocation is not supported by your browser');
+            return;
         }
 
-        const filtered = filter ? moodsList.filter(m => m.mood === filter) : moodsList;
+        // If already locating, toggle Follow Mode
+        if (isLocating) {
+            const nextFollow = !isFollowing;
+            setIsFollowing(nextFollow);
+            isFollowingRef.current = nextFollow;
 
-        filtered.forEach((m) => {
-            if (!m.location?.coordinates || m.location.coordinates[0] === 0) return;
+            if (nextFollow && userLocation && map.current) {
+                isFlyingRef.current = true;
+                map.current.flyTo({
+                    center: userLocation,
+                    zoom: 14,
+                    pitch: 45, // Maintain 3D tilt during lock-on
+                    duration: 1000,
+                    essential: true
+                });
+            }
+            return;
+        }
 
-            const color = getMoodColor(m.mood);
-            const emoji = getMoodEmoji(m.mood);
+        setIsLocating(true);
+        setIsFollowing(true);
+        isFollowingRef.current = true;
 
-            // Mapbox Marker Container (handled by Mapbox)
-            const el = document.createElement('div');
-            el.className = 'custom-marker-container';
+        const success = (position: GeolocationPosition) => {
+            const { longitude, latitude } = position.coords;
+            const newCoords: [number, number] = [longitude, latitude];
+            setUserLocation(newCoords);
 
-            // Inner Sticker (where we apply animations)
-            const sticker = document.createElement('div');
-            sticker.className = 'marker-sticker';
-            sticker.innerHTML = emoji;
-            sticker.style.background = 'white';
-            sticker.style.width = '32px';
-            sticker.style.height = '32px';
-            sticker.style.borderRadius = '50%';
-            sticker.style.display = 'flex';
-            sticker.style.alignItems = 'center';
-            sticker.style.justifyContent = 'center';
-            sticker.style.fontSize = '18px';
-            sticker.style.boxShadow = `0 4px 12px ${color}66`;
-            sticker.style.border = `2px solid ${color}`;
-            sticker.style.cursor = 'pointer';
+            if (map.current && isFollowingRef.current) {
+                isFlyingRef.current = true;
+                map.current.flyTo({
+                    center: newCoords,
+                    zoom: 14,
+                    pitch: 45, // Maintain 3D tilt during real-time following
+                    duration: 1200, // Slightly slower for more natural follow
+                    essential: true
+                });
+            }
+        };
 
-            el.appendChild(sticker);
+        const error = (err: GeolocationPositionError) => {
+            console.error('Error getting location:', err);
+            setIsLocating(false);
+            setIsFollowing(false);
+            if (watchId.current) navigator.geolocation.clearWatch(watchId.current);
+            alert('Unable to retrieve your location');
+        };
 
-            new mapboxgl.Marker({ element: el })
-                .setLngLat(m.location.coordinates)
-                .setPopup(new mapboxgl.Popup({ offset: 25, className: 'custom-popup' })
-                    .setHTML(`
-                  <div style="padding: 4px; color: black">
-                    <h3 style="font-weight: 800; text-transform: capitalize; margin-bottom: 4px;">${m.mood} ${emoji}</h3>
-                    <p style="font-size: 12px; color: #52525b; line-height: 1.2">${m.description || 'No description'}</p>
-                    <p style="font-size: 8px; margin-top: 8px; color: #a1a1aa; text-transform: uppercase; font-weight: 700">${new Date(m.createdAt).toLocaleDateString()}</p>
-                  </div>
-                `))
-                .addTo(map.current!);
+        watchId.current = navigator.geolocation.watchPosition(success, error, {
+            enableHighAccuracy: true,
+            maximumAge: 0,
+            timeout: 5000
         });
     };
+
+    // Cleanup watch on unmount
+    useEffect(() => {
+        return () => {
+            if (watchId.current) navigator.geolocation.clearWatch(watchId.current);
+        };
+    }, []);
 
     const getMoodColor = (mood: string) => {
         switch (mood) {
@@ -416,16 +483,16 @@ const Map: React.FC = () => {
             {/* Filter Bar */}
             <div className="filter-bar">
                 <button
-                    className={`filter-item ${showHeatmap ? 'active' : ''}`}
-                    onClick={() => setShowHeatmap(!showHeatmap)}
-                    title="Toggle Heatmap"
+                    className={`filter-item ${clusterEnabled ? 'active' : ''}`}
+                    onClick={() => setClusterEnabled(!clusterEnabled)}
+                    title="Toggle Clustering"
                 >
-                    🔥
+                    🎯
                 </button>
                 <div style={{ width: '100%', height: '1px', background: 'rgba(255,255,255,0.1)', margin: '4px 0' }} />
                 <button
                     className={`filter-item ${!filterMood ? 'active' : ''}`}
-                    onClick={() => { setFilterMood(null); renderMarkers(moods, null); }}
+                    onClick={() => setFilterMood(null)}
                 >
                     All
                 </button>
@@ -433,12 +500,24 @@ const Map: React.FC = () => {
                     <button
                         key={mood}
                         className={`filter-item ${filterMood === mood ? 'active' : ''}`}
-                        onClick={() => { setFilterMood(mood); renderMarkers(moods, mood); }}
+                        onClick={() => setFilterMood(mood)}
                     >
                         {getMoodEmoji(mood)}
                     </button>
                 ))}
             </div>
+
+            {/* GPS Button */}
+            <button
+                className={`gps-button ${isLocating ? 'active' : ''} ${isFollowing ? 'following' : ''}`}
+                onClick={handleGoToLocation}
+                title={isFollowing ? "Stop following" : "Go to current location"}
+            >
+                <div className="gps-dot-container">
+                    <div className="gps-dot-core"></div>
+                    <div className="gps-dot-pulse"></div>
+                </div>
+            </button>
 
             {/* Top Bar Overlay */}
             <div className="stats-bar">
@@ -571,44 +650,161 @@ const Map: React.FC = () => {
                 }
                 .cluster-inner {
                     background: rgba(9, 9, 11, 0.9);
-                    backdrop-filter: blur(8px);
-                    width: 48px;
-                    height: 48px;
+                    backdrop-filter: blur(12px);
+                    width: 52px;
+                    height: 52px;
                     border-radius: 50%;
                     display: flex;
                     align-items: center;
                     justify-content: center;
                     position: relative;
-                    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-                    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+                    transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275), border-color 1s ease;
+                    box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+                    animation: cluster-pop 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
                 }
                 .cluster-inner:hover {
-                    transform: scale(1.2);
+                    transform: scale(1.15) translateY(-4px);
                     background: rgba(255, 255, 255, 0.1);
+                    box-shadow: 0 20px 40px rgba(0,0,0,0.6);
                 }
                 .cluster-emoji {
-                    font-size: 24px;
+                    font-size: 26px;
+                    transition: transform 0.3s ease;
+                }
+                .cluster-inner:hover .cluster-emoji {
+                    transform: scale(1.2);
                 }
                 .cluster-count {
                     position: absolute;
-                    top: -5px;
-                    right: -5px;
+                    top: -4px;
+                    right: -4px;
                     background: white;
                     color: black;
-                    font-size: 10px;
+                    font-size: 11px;
                     font-weight: 900;
-                    width: 20px;
-                    height: 20px;
-                    border-radius: 50%;
+                    min-width: 22px;
+                    height: 22px;
+                    padding: 0 4px;
+                    border-radius: 11px;
                     display: flex;
                     align-items: center;
                     justify-content: center;
                     border: 2px solid #09090b;
-                    box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+                    transition: all 0.3s ease;
                 }
                 @keyframes marker-float {
                     0%, 100% { transform: translateY(0) rotate(0); }
                     50% { transform: translateY(-8px) rotate(4deg); }
+                }
+                @keyframes cluster-pop {
+                    0% { transform: scale(0.3) rotate(-15deg); opacity: 0; }
+                    100% { transform: scale(1) rotate(0deg); opacity: 1; }
+                }
+                .cluster-marker, .custom-marker-container {
+                    transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+                }
+                .gps-button {
+                    position: absolute;
+                    bottom: 32px;
+                    left: 20px;
+                    z-index: 100;
+                    width: 50px;
+                    height: 50px;
+                    background: rgba(9, 9, 11, 0.6);
+                    backdrop-filter: blur(20px);
+                    border-radius: 16px;
+                    border: 1px solid rgba(255, 255, 255, 0.1);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: pointer;
+                    transition: all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+                }
+                .gps-button:hover {
+                    transform: scale(1.1) translateY(-2px);
+                    background: rgba(255, 255, 255, 0.1);
+                    border-color: #3b82f6;
+                }
+                .gps-button:active {
+                    transform: scale(0.95);
+                }
+                .gps-button.active {
+                    border-color: #3b82f6;
+                    color: #3b82f6;
+                }
+                .gps-button.following {
+                    background: rgba(59, 130, 246, 0.2);
+                    border-color: #3b82f6;
+                    box-shadow: 0 0 20px rgba(59, 130, 246, 0.4);
+                }
+                .gps-button:active .gps-icon {
+                    transform: scale(0.8);
+                }
+                .gps-dot-container {
+                    position: relative;
+                    width: 20px;
+                    height: 20px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                }
+                .gps-dot-core {
+                    width: 12px;
+                    height: 12px;
+                    background: #3b82f6;
+                    border-radius: 50%;
+                    z-index: 2;
+                }
+                .gps-dot-pulse {
+                    position: absolute;
+                    width: 100%;
+                    height: 100%;
+                    border: 2px solid #3b82f6;
+                    border-radius: 50%;
+                    animation: gps-dot-ripple 2s infinite;
+                    opacity: 0;
+                }
+                @keyframes gps-dot-ripple {
+                    0% { transform: scale(0.5); opacity: 1; }
+                    100% { transform: scale(1.5); opacity: 0; }
+                }
+                .gps-button.following .gps-dot-core {
+                    background: #fff;
+                    box-shadow: 0 0 10px #fff;
+                }
+                .gps-button.following .gps-dot-pulse {
+                    border-color: #fff;
+                }
+                .user-location-container {
+                    position: relative;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 40px;
+                    height: 40px;
+                }
+                .user-location-marker {
+                    width: 20px;
+                    height: 20px;
+                    background: #3b82f6;
+                    border: 3px solid white;
+                    border-radius: 50%;
+                    box-shadow: 0 0 15px rgba(59, 130, 246, 0.8);
+                }
+                .pulse-ring {
+                    position: absolute;
+                    width: 40px;
+                    height: 40px;
+                    border: 2px solid #3b82f6;
+                    border-radius: 50%;
+                    animation: ring-pulse 2s infinite;
+                    opacity: 0;
+                }
+                @keyframes ring-pulse {
+                    0% { transform: scale(0.5); opacity: 1; }
+                    100% { transform: scale(2); opacity: 0; }
                 }
             `}</style>
         </div>
