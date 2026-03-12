@@ -17,7 +17,7 @@ import { io } from 'socket.io-client';
 // Replace with your actual Mapbox token yesss
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
 
-const SOCKET_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'http://localhost:5005';
+const SOCKET_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') || 'https://moodmaps-b7xv.onrender.com';
 const MIN_DOMINANT_MOOD_RADIUS_METERS = 80;
 const MAX_DOMINANT_MOOD_RADIUS_METERS = 500;
 const DOMINANT_RADIUS_VIEWPORT_FACTOR = 0.9;
