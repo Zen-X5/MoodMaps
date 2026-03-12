@@ -10,17 +10,22 @@ dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
+
+const allowedOrigins = process.env.CLIENT_URL
+    ? process.env.CLIENT_URL.split(',')
+    : ['http://localhost:3000'];
+
 const io = new Server(server, {
     cors: {
-        origin: "*", // Adjust for production
+        origin: allowedOrigins,
         methods: ["GET", "POST"]
     }
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5005;
 
 // Middleware
-app.use(cors());
+app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json());
 
 // Pass IO to request object so routes can use it
