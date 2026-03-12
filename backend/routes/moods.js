@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Mood = require('../models/Mood');
 const { protect } = require('../middleware/authMiddleware');
+const upload = require('../config/cloudinary');
 
 // @desc    Get all moods
 // @route   GET /api/moods
@@ -18,32 +19,43 @@ router.get('/', async (req, res) => {
 // @desc    Submit a mood
 // @route   POST /api/moods
 // @access  Private
-router.post('/', protect, async (req, res) => {
+router.post('/', protect, upload.array('images', 5), async (req, res) => {
     try {
-        const { location, mood, description } = req.body;
+        let { location, mood, description, rating } = req.body;
         const userId = req.user.id;
+
+        // Since it's FormData, location might be a string
+        if (typeof location === 'string') {
+            location = JSON.parse(location);
+        }
 
         if (!location || !mood) {
             return res.status(400).json({ success: false, error: 'Please provide all required fields' });
         }
 
-        // One mood per user per location
+        const uploadedImages = req.files ? req.files.map(file => file.path) : [];
+
+        // Check if user already has a mood at this EXACT coordinate
         const existingMood = await Mood.findOne({
             userId,
             'location.coordinates': location.coordinates,
         });
 
         if (existingMood) {
-            // Update existing mood instead of creating new one
+            // Update existing mood with new data
             existingMood.mood = mood;
             existingMood.description = description;
+            existingMood.rating = rating || existingMood.rating;
+            if (uploadedImages.length > 0) {
+                existingMood.images = [...new Set([...existingMood.images, ...uploadedImages])];
+            }
             existingMood.updatedAt = Date.now();
             await existingMood.save();
 
-            // Emit socket event
-            req.io.emit('new_mood', existingMood);
+            const populatedMood = await Mood.findById(existingMood._id).populate('userId', 'username');
+            req.io.emit('new_mood', populatedMood);
 
-            return res.status(200).json({ success: true, data: existingMood, updated: true });
+            return res.status(200).json({ success: true, data: populatedMood, updated: true });
         }
 
         const newMood = await Mood.create({
@@ -51,13 +63,16 @@ router.post('/', protect, async (req, res) => {
             location,
             mood,
             description,
+            rating: rating || 5,
+            images: uploadedImages
         });
 
-        // Emit socket event
-        req.io.emit('new_mood', newMood);
+        const populatedNewMood = await Mood.findById(newMood._id).populate('userId', 'username');
+        req.io.emit('new_mood', populatedNewMood);
 
-        res.status(201).json({ success: true, data: newMood });
+        res.status(201).json({ success: true, data: populatedNewMood });
     } catch (err) {
+        console.error(err);
         res.status(400).json({ success: false, error: err.message });
     }
 });
@@ -78,10 +93,6 @@ router.get('/dominant', async (req, res) => {
             coordinates: [parseFloat(lng), parseFloat(lat)]
         };
 
-        const now = new Date();
-        const oneDayAgo = new Date(now.getTime() - (24 * 60 * 60 * 1000));
-        const sevenDaysAgo = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
-
         const moods = await Mood.aggregate([
             {
                 $geoNear: {
@@ -92,30 +103,35 @@ router.get('/dominant', async (req, res) => {
                 }
             },
             {
-                $addFields: {
-                    weight: {
-                        $cond: [
-                            { $gt: ["$createdAt", oneDayAgo] },
-                            2.0, // New moods = Double weight
-                            {
-                                $cond: [
-                                    { $gt: ["$createdAt", sevenDaysAgo] },
-                                    1.0, // Recent moods = Base weight
-                                    0.5  // Old moods = Half weight
-                                ]
-                            }
-                        ]
-                    }
+                $group: {
+                    _id: "$mood",
+                    count: { $sum: 1 },
+                    latestAt: { $max: "$createdAt" }
                 }
             },
             {
-                $group: {
-                    _id: "$mood",
-                    score: { $sum: "$weight" },
-                    count: { $sum: 1 }
+                $addFields: {
+                    priority: {
+                        $switch: {
+                            branches: [
+                                { case: { $eq: ["$_id", "chill"] }, then: 5 },
+                                { case: { $eq: ["$_id", "romantic"] }, then: 4 },
+                                { case: { $eq: ["$_id", "nostalgic"] }, then: 3 },
+                                { case: { $eq: ["$_id", "lonely"] }, then: 2 },
+                                { case: { $eq: ["$_id", "unsafe"] }, then: 1 },
+                            ],
+                            default: 0
+                        }
+                    }
                 }
             },
-            { $sort: { score: -1 } },
+            { $sort: { count: -1, priority: -1, latestAt: -1 } },
+            {
+                $project: {
+                    _id: 1,
+                    count: 1
+                }
+            },
             { $limit: 1 }
         ]);
 
@@ -126,6 +142,71 @@ router.get('/dominant', async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, error: 'Aggregation Error' });
+    }
+});
+
+// @desc    Get all moods at a specific "Spot" (coordinates)
+// @route   GET /api/moods/spot
+// @access  Public
+router.get('/spot', async (req, res) => {
+    try {
+        const { lat, lng } = req.query;
+
+        if (!lat || !lng) {
+            return res.status(400).json({ success: false, error: 'Please provide coordinates' });
+        }
+
+        const moods = await Mood.find({
+            location: {
+                $near: {
+                    $geometry: {
+                        type: 'Point',
+                        coordinates: [parseFloat(lng), parseFloat(lat)]
+                    },
+                    $maxDistance: 2 // 2 meters to be safe with tile precision
+                }
+            }
+        })
+            .populate('userId', 'username')
+            .populate('comments.userId', 'username')
+            .sort({ createdAt: -1 });
+
+        res.status(200).json({
+            success: true,
+            count: moods.length,
+            data: moods
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: 'Server Error' });
+    }
+});
+
+// @desc    Add a comment to a mood
+// @route   POST /api/moods/:id/comments
+// @access  Private
+router.post('/:id/comments', protect, async (req, res) => {
+    try {
+        const mood = await Mood.findById(req.params.id);
+        if (!mood) return res.status(404).json({ success: false, error: 'Mood not found' });
+
+        const newComment = {
+            userId: req.user.id,
+            text: req.body.text
+        };
+
+        mood.comments.unshift(newComment);
+        await mood.save();
+
+        const populatedMood = await Mood.findById(mood._id)
+            .populate('userId', 'username')
+            .populate('comments.userId', 'username');
+
+        req.io.emit('new_comment', { moodId: mood._id, comment: newComment });
+
+        res.status(201).json({ success: true, data: populatedMood });
+    } catch (err) {
+        res.status(400).json({ success: false, error: err.message });
     }
 });
 
